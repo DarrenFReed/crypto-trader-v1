@@ -1,0 +1,48 @@
+error occured in new solana token log callback function, {
+  "cause": {
+    "name": "ConnectTimeoutError",
+    "code": "UND_ERR_CONNECT_TIMEOUT",
+    "message": "Connect Timeout Error"
+  }
+}
+error occured in new solana token log callback function, {
+  "code": "ERR_STRING_TOO_LONG"
+}
+error occured in new solana token log callback function, {}
+error occured in new solana token log callback function, {}
+error occured in new solana token log callback function, {}
+error occured in new solana token log callback function, {}
+error occured in new solana token log callback function, {}
+error occured in new solana token log callback function, {
+  "name": "PrismaClientKnownRequestError",
+  "code": "P2002",
+  "clientVersion": "6.3.0",
+  "meta": {
+    "modelName": "Token",
+    "target": [
+      "baseAddress"
+    ]
+  }
+}
+error occured in new solana token log callback function, {
+  "name": "PrismaClientKnownRequestError",
+  "code": "P2002",
+  "clientVersion": "6.3.0",
+  "meta": {
+    "modelName": "Token",
+    "target": [
+      "baseAddress"
+    ]
+  }
+}
+error occured in new solana token log callback function, {
+  "name": "PrismaClientKnownRequestError",
+  "code": "P2002",
+  "clientVersion": "6.3.0",
+  "meta": {
+    "modelName": "Token",
+    "target": [
+      "baseAddress"
+    ]
+  }
+}

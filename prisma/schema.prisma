@@ -1,0 +1,124 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = "postgresql://postgres:postgress@localhost:5432/crypto-trade?schema=public"
+}
+
+model Token {
+  baseAddress   String  @id @map("base_address") // 🔥 Now the primary key
+  baseDecimals  Int     @map("base_decimals")
+  baseLpAmount  Float   @default(0) @map("base_lp_amount")
+  quoteAddress  String  @map("quote_address")
+  quoteDecimals Int     @map("quote_decimals")
+  quoteLpAmount Float   @default(0) @map("quote_lp_amount")
+  tokenStatus   TokenStatus @default(WAITING_FOR_POOL) @map("token_status")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  metrics       TokenMetrics[]
+  pools         LiquidityPool[]
+  trades        Trade[]
+  tokenHolders  TokenHolders[]
+  transactions  Transaction[]
+
+}
+
+model TokenMetrics {
+  id                     Int     @id @default(autoincrement()) @map("metrics_id")
+  tokenBaseAddress       String  @map("token_base_address") // 🔥 Changed from tokenId to baseAddress
+  quoteLpAmount          Float   @default(0) @map("quote_lp_amount")
+  liquidity              Float   @default(0) @map("liquidity")
+  marketCap              Float   @default(0) @map("market_cap")
+
+  buyVolume              Float   @default(0) @map("buy_volume")
+  sellVolume             Float   @default(0) @map("sell_volume")
+  buyCount               Int     @default(0) @map("buy_count")
+  sellCount              Int     @default(0) @map("sell_count")
+
+  buySellTxRatio         Float   @default(0) @map("buy_sell_tx_ratio")
+  buySellVolumeRatio     Float   @default(0) @map("buy_sell_volume_ratio")
+
+  tradeFrequency         Int     @default(0) @map("trade_frequency")
+  lastTransactionSignature String? @map("last_transaction_signature")
+  createdAt              DateTime @default(now()) @map("created_at")
+
+  token                  Token   @relation(fields: [tokenBaseAddress], references: [baseAddress], onDelete: Cascade)
+}
+
+model LiquidityPool {
+  id                Int     @id @default(autoincrement()) @map("pool_id")
+  tokenBaseAddress  String  @map("token_base_address") // 🔥 Changed from tokenId to baseAddress
+  poolId            String  @unique @map("pool_address")
+  marketId          String  @map("market_id")
+  quoteMint         String  @map("quote_mint")
+  poolBaseVault     String?  @map("pool_base_vault")
+  poolQuoteVault    String? @map("pool_quote_vault")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  token             Token   @relation(fields: [tokenBaseAddress], references: [baseAddress], onDelete: Cascade)
+  trades            Trade[]
+}
+
+model Trade {
+  id          String      @id @default(cuid()) @map("trade_id")
+  tokenBaseAddress String  @map("token_base_address") // 🔥 Changed from tokenId to baseAddress
+  poolId      Int     @map("pool_id")
+  tradeStatus TradeStatus @default(PENDING) @map("trade_status")
+  executedAt  DateTime? @map("executed_at")
+  amount      Float   @map("trade_amount")
+  price       Float   @map("trade_price")
+
+  token       Token         @relation(fields: [tokenBaseAddress], references: [baseAddress])
+  pool        LiquidityPool @relation(fields: [poolId], references: [id])
+}
+
+model ActiveSubscription {
+  id                Int      @id @default(autoincrement()) @map("subscription_id")
+  tokenBaseAddress  String   @map("token_base_address") // 🔥 Changed from tokenId to baseAddress
+  solanaSubId       Int      @map("solana_subscription_id") 
+  createdAt         DateTime @default(now()) @map("created_at")
+
+}
+
+model TokenHolders {
+  id                Int      @id @default(autoincrement()) @map("holders_id")
+  tokenBaseAddress  String   @map("token_base_address")
+  holdersCount      Int      @default(0) @map("holders_count")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  token             Token    @relation(fields: [tokenBaseAddress], references: [baseAddress], onDelete: Cascade)
+}
+
+model Transaction {
+  id               String   @id @default(uuid())
+  tokenBaseAddress String   @map("token_base_address")
+  type            TransactionType  @map("transacton_type")
+  amount          Float
+  price           Float?
+  timestamp       DateTime @default(now())
+  token           Token    @relation(fields: [tokenBaseAddress], references: [baseAddress], onDelete: Cascade)
+}
+
+enum TransactionType {
+BUY
+SELL
+}
+
+
+enum TokenStatus {
+  WAITING_FOR_POOL
+  POOL_FOUND
+  BUY_CANDIDATE
+  BOUGHT
+  SOLD
+  FAILED
+  ACTIVE
+}
+
+enum TradeStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
