@@ -1,0 +1,154 @@
+preTokenBalances =
+(3) [{…}, {…}, {…}]
+0 =
+{accountIndex: 1, mint: 'So11111111111111111111111111111111111111112', owner: '24r5YMCsH3i3g8bWZ1UKYzb8KMmBqiPKcwLKc5qqe5tP', programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', uiTokenAmount: {…}}
+accountIndex =
+1
+mint =
+'So11111111111111111111111111111111111111112'
+owner =
+'24r5YMCsH3i3g8bWZ1UKYzb8KMmBqiPKcwLKc5qqe5tP'
+programId =
+'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
+uiTokenAmount =
+{amount: '201230230', decimals: 9, uiAmount: 0.20123023, uiAmountString: '0.20123023'}
+[[Prototype]] =
+Object
+1 =
+{accountIndex: 6, mint: 'So11111111111111111111111111111111111111112', owner: '5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1', programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', uiTokenAmount: {…}}
+accountIndex =
+6
+mint =
+'So11111111111111111111111111111111111111112'
+owner =
+'5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1'
+programId =
+'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
+uiTokenAmount =
+{amount: '88312935682', decimals: 9, uiAmount: 88.312935682, uiAmountString: '88.312935682'}
+amount =
+'88312935682'
+decimals =
+9
+uiAmount =
+88.312935682
+uiAmountString =
+'88.312935682'
+[[Prototype]] =
+Object
+[[Prototype]] =
+Object
+2 =
+{accountIndex: 7, mint: 'FXhBvPQSSoK5yiGjuQREZZ8oZWenGW9aEicr1VBzpump', owner: '5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1', programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', uiTokenAmount: {…}}
+accountIndex =
+7
+mint =
+'FXhBvPQSSoK5yiGjuQREZZ8oZWenGW9aEicr1VBzpump'
+owner =
+'5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1'
+programId =
+'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
+uiTokenAmount =
+{amount: '185203236060163', decimals: 6, uiAmount: 185203236.060163, uiAmountString: '185203236.060163'}
+[[Prototype]] =
+Object
+length =
+3
+[[Prototype]] =
+Array(0)
+[[Prototype]] =
+Object
+rewards =
+(0) []
+status =
+{Ok: null}
+[[Prototype]] =
+Object
+slot =
+324390079
+transaction =
+{message: MessageV0, signatures: Array(1)}
+version =
+0
+[[Prototype]] =
+Object
+txid
+
+post
+0 =
+{accountIndex: 3, mint: 'FXhBvPQSSoK5yiGjuQREZZ8oZWenGW9aEicr1VBzpump', owner: '24r5YMCsH3i3g8bWZ1UKYzb8KMmBqiPKcwLKc5qqe5tP', programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', uiTokenAmount: {…}}
+accountIndex =
+3
+mint =
+'FXhBvPQSSoK5yiGjuQREZZ8oZWenGW9aEicr1VBzpump'
+owner =
+'24r5YMCsH3i3g8bWZ1UKYzb8KMmBqiPKcwLKc5qqe5tP'
+programId =
+'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
+uiTokenAmount =
+{amount: '2091858230', decimals: 6, uiAmount: 2091.85823, uiAmountString: '2091.85823'}
+amount =
+'2091858230'
+decimals =
+6
+uiAmount =
+2091.85823
+uiAmountString =
+'2091.85823'
+[[Prototype]] =
+Object
+[[Prototype]] =
+Object
+1 =
+{accountIndex: 6, mint: 'So11111111111111111111111111111111111111112', owner: '5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1', programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', uiTokenAmount: {…}}
+accountIndex =
+6
+mint =
+'So11111111111111111111111111111111111111112'
+owner =
+'5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1'
+programId =
+'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
+uiTokenAmount =
+{amount: '88313935682', decimals: 9, uiAmount: 88.313935682, uiAmountString: '88.313935682'}
+amount =
+'88313935682'
+decimals =
+9
+uiAmount =
+88.313935682
+uiAmountString =
+'88.313935682'
+[[Prototype]] =
+Object
+[[Prototype]] =
+Object
+2 =
+{accountIndex: 7, mint: 'FXhBvPQSSoK5yiGjuQREZZ8oZWenGW9aEicr1VBzpump', owner: '5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1', programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', uiTokenAmount: {…}}
+accountIndex =
+7
+mint =
+'FXhBvPQSSoK5yiGjuQREZZ8oZWenGW9aEicr1VBzpump'
+owner =
+'5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1'
+programId =
+'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
+uiTokenAmount =
+{amount: '185201144201933', decimals: 6, uiAmount: 185201144.201933, uiAmountString: '185201144.201933'}
+amount =
+'185201144201933'
+decimals =
+6
+uiAmount =
+185201144.201933
+uiAmountString =
+'185201144.201933'
+[[Prototype]] =
+Object
+[[Prototype]] =
+Object
+length =
+3
+[[Prototype]] =
+Array(0)
+

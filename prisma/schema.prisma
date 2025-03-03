@@ -58,20 +58,17 @@ model LiquidityPool {
   createdAt         DateTime @default(now()) @map("created_at")
 
   token             Token   @relation(fields: [tokenBaseAddress], references: [baseAddress], onDelete: Cascade)
-  trades            Trade[]
 }
 
 model Trade {
   id          String      @id @default(cuid()) @map("trade_id")
   tokenBaseAddress String  @map("token_base_address") // 🔥 Changed from tokenId to baseAddress
-  poolId      Int     @map("pool_id")
-  tradeStatus TradeStatus @default(PENDING) @map("trade_status")
   executedAt  DateTime? @map("executed_at")
   amount      Float   @map("trade_amount")
   price       Float   @map("trade_price")
+  type        String  @map("type")
 
   token       Token         @relation(fields: [tokenBaseAddress], references: [baseAddress])
-  pool        LiquidityPool @relation(fields: [poolId], references: [id])
 }
 
 model ActiveSubscription {

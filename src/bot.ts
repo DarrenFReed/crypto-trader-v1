@@ -31,8 +31,8 @@ import { MarketCapFilter } from './filters/market-cap.filter';
 import { stopMonitoring } from './helpers/monitoring-manager';
 import { MAINNET_PROGRAM_ID, MARKET_STATE_LAYOUT_V3 } from '@raydium-io/raydium-sdk';
 import { fetchPoolData } from './helpers/fetchPoolData';
-import { raySwap } from './trading/raySwap';
-import { splAccountLayout } from '@raydium-io/raydium-sdk-v2';
+import { raySwapBuy, raySwapSell } from './trading/raySwap';
+import { AccountType, splAccountLayout } from '@raydium-io/raydium-sdk-v2';
 
 const prisma = new PrismaClient();
 
@@ -184,7 +184,7 @@ export class Bot {
           //const lamports = Number(this.config.quoteAmount) * 1_000_000_000; // Multiply using bigint
           const lamports = 1000000
          
-          const swapResult = await raySwap(this.connection, poolKeys.quoteMint.toString(), poolKeys.baseMint.toString(), lamports);
+          const swapResult = await raySwapBuy(this.connection, poolKeys.quoteMint.toString(), poolKeys.baseMint.toString(), lamports);
           console.log("Transaction IDs:", swapResult);
           
           if (swapResult.confirmed) {
@@ -253,7 +253,10 @@ export class Bot {
 
       const poolKeys: LiquidityPoolKeysV4 = createPoolKeys(new PublicKey(poolData.id), poolData.state, market);
 
-      await this.priceMatchV1(tokenAmountIn, new PublicKey(poolData.id));
+      const priceCheckResult = await this.priceMatchV1(tokenAmountIn, new PublicKey(poolData.id), rawAccount.mint.toString());
+      //await this.priceMatchV1(tokenAmountIn, new PublicKey(poolData.id),rawAccount.mint.toString());
+
+
 
       for (let i = 0; i < this.config.maxSellRetries; i++) {
         try {
@@ -262,18 +265,12 @@ export class Bot {
             `Send sell transaction attempt: ${i + 1}/${this.config.maxSellRetries}`,
           );
 
-
           const sellTokenAmount = rawAccount.amount;
 
-
-          const swapResult = await raySwap(this.connection, poolKeys.baseMint.toString(), poolKeys.quoteMint.toString(), Number(sellTokenAmount));
+          const swapResult = await raySwapSell(this.connection, poolKeys.baseMint.toString(), poolKeys.quoteMint.toString(), Number(sellTokenAmount), accountId.toString());
           console.log("Transaction IDs:", swapResult);
           
           if (swapResult.confirmed) {
-            await prisma.token.update({
-              where: { baseAddress: rawAccount.mint.toString() },
-              data: { tokenStatus: 'BOUGHT' },
-            });
             const subscriptionManager = SubscriptionManager.getInstance(this.connection);
             await subscriptionManager.removeSubscription(rawAccount.mint.toString());
             logger.info(`🛑 Stopped monitoring ${rawAccount.mint.toString()} after sell.`);
@@ -436,8 +433,6 @@ export class Bot {
 
     return this.txExecutor.executeAndConfirm(transaction, wallet, latestBlockhash);
   }
-
-
   
   private async filterMatch(poolKeys: LiquidityPoolKeysV4) {
     if (this.config.filterCheckInterval === 0 || this.config.filterCheckDuration === 0) {
@@ -521,20 +516,48 @@ export class Bot {
     return false;
 }
 
-private async priceMatchV1(amountIn: TokenAmount, poolID: PublicKey): Promise<'take-profit' | 'stop-loss' | 'timeout'> {
+
+private async priceMatchV1(
+  amountIn: TokenAmount,
+  poolID: PublicKey,
+  baseAddress: string
+): Promise<'take-profit' | 'stop-loss' | 'timeout'> {
   if (this.config.priceCheckDuration === 0 || this.config.priceCheckInterval === 0) {
     return 'take-profit'; // Skip price check if not configured
   }
 
-  const timesToCheck = this.config.priceCheckDuration / this.config.priceCheckInterval;
-  const profitFraction = this.config.quoteAmount.mul(this.config.takeProfit).numerator.div(new BN(100));
-  const profitAmount = new TokenAmount(this.config.quoteToken, profitFraction, true);
-  const takeProfit = this.config.quoteAmount.add(profitAmount);
+  const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 
-  const lossFraction = this.config.quoteAmount.mul(this.config.stopLoss).numerator.div(new BN(100));
-  const lossAmount = new TokenAmount(this.config.quoteToken, lossFraction, true);
-  const stopLoss = this.config.quoteAmount.subtract(lossAmount);
-  const slippage = new Percent(this.config.sellSlippage, 100);
+  // Fetch the last trade price from the database
+  const maxRetries = 5;
+  const delayMs = 1000; // 1 second retry delay
+  let lastTrade: { price: number } | null = null;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    lastTrade = await prisma.trade.findFirst({
+      where: { tokenBaseAddress: baseAddress },
+      orderBy: { executedAt: 'desc' },
+      select: { price: true },
+    });
+
+    if (lastTrade) {
+      console.log(`✅ Trade record found in database for ${baseAddress} after ${attempt} attempt(s).`);
+      break;
+    }
+
+    console.log(`⏳ Waiting for trade record... Attempt ${attempt}/${maxRetries}`);
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+
+  if (!lastTrade) {
+    console.error("❌ No trade history found. Exiting price check.");
+    return 'timeout';
+  }
+
+  const purchasePrice = lastTrade.price; // ✅ Directly using float value
+  const takeProfitMultiplier = 1 + this.config.takeProfit / 100; // Example: 10% → 1.1
+  const stopLossMultiplier = 1 - this.config.stopLoss / 100; // Example: 10% → 0.9
+
   let timesChecked = 0;
 
   do {
@@ -543,69 +566,69 @@ private async priceMatchV1(amountIn: TokenAmount, poolID: PublicKey): Promise<'t
       const poolAccountInfo = await this.connection.getAccountInfo(poolID);
 
       if (!poolAccountInfo?.data) {
-        logger.debug(`❌ No Raydium pool data available for ${poolID.toString()}`);
-        return 'timeout'; // Skip if pool data is unavailable
+        console.error(`❌ No Raydium pool data available for ${poolID.toString()}`);
+        return 'timeout';
       }
 
       // Decode the pool state using Raydium's liquidity state layout
       const poolState = LIQUIDITY_STATE_LAYOUT_V4.decode(poolAccountInfo.data);
 
+      // Identify whether WSOL is the base mint
+      const isWsolBase = poolState.baseMint.toString() === WSOL_MINT;
+
       // Fetch the base vault and quote vault accounts
       const baseVault = new PublicKey(poolState.baseVault);
       const quoteVault = new PublicKey(poolState.quoteVault);
 
-      // Fetch the token account data for the base vault
-      const baseVaultAccountInfo = await this.connection.getAccountInfo(baseVault);
-      if (!baseVaultAccountInfo?.data) {
-        throw new Error('Base vault account not found or has no data');
-      }
-      const baseReserve = splAccountLayout.decode(baseVaultAccountInfo.data).amount;
+      // Fetch base & quote reserves
+      const baseVaultInfo = await this.connection.getAccountInfo(baseVault);
+      const quoteVaultInfo = await this.connection.getAccountInfo(quoteVault);
 
-      // Fetch the token account data for the quote vault
-      const quoteVaultAccountInfo = await this.connection.getAccountInfo(quoteVault);
-      if (!quoteVaultAccountInfo?.data) {
-        throw new Error('Quote vault account not found or has no data');
-      }
-      const quoteReserve = splAccountLayout.decode(quoteVaultAccountInfo.data).amount;
-
-      // Calculate the price of the base token in terms of the quote token
-      const price = Number(quoteReserve) / Number(baseReserve);
-
-      // Calculate the current value of the input amount
-      const amountOut = new TokenAmount(
-        this.config.quoteToken,
-        new BN(amountIn.raw.toString()).muln(price),
-        true
-      );
-
-      logger.debug(
-        { mint: poolState.baseMint.toString() },
-        `Take profit: ${takeProfit.toFixed()} | Stop loss: ${stopLoss.toFixed()} | Current: ${amountOut.toFixed()}`,
-      );
-
-      // Check if the current value is below the stop loss or above the take profit
-      if (amountOut.lt(stopLoss)) {
-        logger.info({ mint: poolState.baseMint.toString() }, `Stop loss triggered: ${amountOut.toFixed()} < ${stopLoss.toFixed()}`);
-        return 'stop-loss'; // Stop loss triggered
+      if (!baseVaultInfo?.data || !quoteVaultInfo?.data) {
+        throw new Error('Vault account data missing.');
       }
 
-      if (amountOut.gt(takeProfit)) {
-        logger.info({ mint: poolState.baseMint.toString() }, `Take profit triggered: ${amountOut.toFixed()} > ${takeProfit.toFixed()}`);
-        return 'take-profit'; // Take profit triggered
+      const baseReserve = new BN(splAccountLayout.decode(baseVaultInfo.data).amount.toString());
+      const quoteReserve = new BN(splAccountLayout.decode(quoteVaultInfo.data).amount.toString());
+
+      // Calculate the current price based on reserves
+      let currentPrice: number;
+      if (isWsolBase) {
+        currentPrice = baseReserve.toNumber() / quoteReserve.toNumber();
+      } else {
+        currentPrice = quoteReserve.toNumber() / baseReserve.toNumber();
+      }
+
+      console.log(`📈 Current Price: ${currentPrice} | Purchase Price: ${purchasePrice}`);
+
+      // Calculate price change percentage
+      const priceChange = (currentPrice / purchasePrice) - 1;
+      const profitPercent = priceChange * 100;
+
+      console.log(`📊 Profit/Loss %: ${profitPercent.toFixed(2)}%`);
+
+      if (currentPrice >= purchasePrice * takeProfitMultiplier) {
+        console.log(`✅ Take profit triggered! Sold at ${currentPrice}`);
+        return 'take-profit';
+      }
+
+      if (currentPrice <= purchasePrice * stopLossMultiplier) {
+        console.log(`❌ Stop loss triggered! Sold at ${currentPrice}`);
+        return 'stop-loss';
       }
 
       await sleep(this.config.priceCheckInterval);
     } catch (e) {
-      logger.trace({ mint: poolID.toString(), e }, `Failed to check token price`);
+      console.error(`⚠️ Failed to check token price for ${poolID.toString()}`, e);
     } finally {
       timesChecked++;
     }
-  } while (timesChecked < timesToCheck);
+  } while (timesChecked < this.config.priceCheckDuration / this.config.priceCheckInterval);
 
-  // If the loop completes without triggering stop loss or take profit
-  logger.info({ mint: poolID.toString() }, `Price check completed without triggering stop loss or take profit`);
-  return 'timeout'; // Timeout
+  console.log("⏳ Price check completed. No action triggered.");
+  return 'timeout';
 }
+
 
 
 
@@ -639,7 +662,7 @@ private async priceMatchV1(amountIn: TokenAmount, poolID: PublicKey): Promise<'t
     do {
       try {
 
-        const poolAccountInfo = await this.connection.getAccountInfo(new PublicKey(poolKeys.id));
+        const poolAccountInfo = await this.connection.getAccountInfo(new PublicKey(poolKeyas.id));
 
         if (!poolAccountInfo) {
             console.log(`❌ No Raydium pool data available for ${poolKeys.id.toString()}`);

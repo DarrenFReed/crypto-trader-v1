@@ -213,10 +213,6 @@ export async function startMonitoring(connection: Connection, newTokenConnection
           //  Log once after confirming both exist
           console.log(`✅ Successfully retrieved both Raydium pool and Market data for ${baseAddress}`);
 
-
-
-          //await Bot(poolId, poolData);
-
           //startTransactionListener(connection, baseAddress, quoteAddress, poolId);
           // Emit events only when data is complete
           tokenEmitter.emit('pool', {poolId: new PublicKey(poolId), poolData});
