@@ -182,7 +182,7 @@ export class Bot {
           
 //SWAP CALLED HERE
           //const lamports = Number(this.config.quoteAmount) * 1_000_000_000; // Multiply using bigint
-          const lamports = 1000000
+          const lamports = 2000000
          
           const swapResult = await raySwapBuy(this.connection, poolKeys.quoteMint.toString(), poolKeys.baseMint.toString(), lamports);
           console.log("Transaction IDs:", swapResult);
@@ -256,8 +256,6 @@ export class Bot {
       const priceCheckResult = await this.priceMatchV1(tokenAmountIn, new PublicKey(poolData.id), rawAccount.mint.toString());
       //await this.priceMatchV1(tokenAmountIn, new PublicKey(poolData.id),rawAccount.mint.toString());
 
-
-
       for (let i = 0; i < this.config.maxSellRetries; i++) {
         try {
           logger.info(
@@ -285,55 +283,6 @@ export class Bot {
           }
 
 
-
-/*           const result = await this.swap(
-            poolKeys,
-            accountId,
-            this.config.quoteAta,
-            tokenIn,
-            this.config.quoteToken,
-            tokenAmountIn,
-            this.config.sellSlippage,
-            this.config.wallet,
-            'sell',
-          ); */
-
-  /*         if (result.confirmed) {
-            logger.info(
-              {
-                dex: `https://dexscreener.com/solana/${rawAccount.mint.toString()}?maker=${this.config.wallet.publicKey}`,
-                mint: rawAccount.mint.toString(),
-                signature: result.signature,
-                url: `https://solscan.io/tx/${result.signature}?cluster=${NETWORK}`,
-              },
-              `Confirmed sell tx`,
-            ); 
-
-            const subscriptionManager = SubscriptionManager.getInstance(this.connection);
-            await subscriptionManager.removeSubscription(rawAccount.mint.toString());
-            logger.info(`🛑 Stopped monitoring ${rawAccount.mint.toString()} after sell.`);
-
-            // 🗑 **Delete Active Subscription from DB**
-            await prisma.activeSubscription.deleteMany({
-                where: { tokenBaseAddress: rawAccount.mint.toString() },
-            });
-
-            await prisma.token.update({
-              where: { baseAddress: rawAccount.mint.toString() },
-              data: { tokenStatus: 'SOLD' },
-            });
-
-            break;
-          } */
-
-/*           logger.info(
-            {
-              mint: rawAccount.mint.toString(),
-              signature: result.signature,
-              error: result.error,
-            },
-            `Error confirming sell tx`,
-          ); */
         } catch (error) {
           logger.debug({ mint: rawAccount.mint.toString(), error }, `Error confirming sell transaction`);
         }
@@ -527,10 +476,11 @@ private async priceMatchV1(
   }
 
   const WSOL_MINT = 'So11111111111111111111111111111111111111112';
+  const LAMPORTS_PER_SOL = 1_000_000_000; 
 
   // Fetch the last trade price from the database
-  const maxRetries = 5;
-  const delayMs = 1000; // 1 second retry delay
+  const maxRetries = 10;
+  const delayMs = 3000; // 1 second retry delay
   let lastTrade: { price: number } | null = null;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -591,14 +541,29 @@ private async priceMatchV1(
       const baseReserve = new BN(splAccountLayout.decode(baseVaultInfo.data).amount.toString());
       const quoteReserve = new BN(splAccountLayout.decode(quoteVaultInfo.data).amount.toString());
 
+      // Convert reserves to human-readable amounts
+      const baseReserveHuman = isWsolBase
+      ? baseReserve.toNumber() / LAMPORTS_PER_SOL // Convert lamports to SOL
+      : baseReserve.toNumber() / Math.pow(10, poolState.baseDecimal.toNumber()); // Adjust for token decimals
+
+     const quoteReserveHuman = isWsolBase
+      ? quoteReserve.toNumber() / Math.pow(10, poolState.quoteDecimal.toNumber()) // Adjust for token decimals
+      : quoteReserve.toNumber() / LAMPORTS_PER_SOL; // Convert lamports to SOL
+
+    // Calculate the current price based on reserves
+      const currentPrice = isWsolBase
+      ? baseReserveHuman / quoteReserveHuman // Price = SOL per token
+      : quoteReserveHuman / baseReserveHuman; // Price = SOL per token
+
+      
       // Calculate the current price based on reserves
-      let currentPrice: number;
+/*       let currentPrice: number;
       if (isWsolBase) {
         currentPrice = baseReserve.toNumber() / quoteReserve.toNumber();
       } else {
         currentPrice = quoteReserve.toNumber() / baseReserve.toNumber();
       }
-
+ */
       console.log(`📈 Current Price: ${currentPrice} | Purchase Price: ${purchasePrice}`);
 
       // Calculate price change percentage
@@ -628,6 +593,8 @@ private async priceMatchV1(
   console.log("⏳ Price check completed. No action triggered.");
   return 'timeout';
 }
+
+
 
 
 

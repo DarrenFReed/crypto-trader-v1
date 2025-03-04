@@ -5,10 +5,11 @@ import { API_URLS } from '@raydium-io/raydium-sdk-v2';
 import dotenv from 'dotenv';
 import bs58 from 'bs58';
 import { PrismaClient } from '@prisma/client';
+import { Mutex } from 'async-mutex';
 
 dotenv.config();
 
-
+const buyMutex = new Mutex();
 
 // Load private key from .env
 //const privateKeyString = process.env.PRIVATE_KEY;
@@ -55,6 +56,7 @@ export async function raySwapBuy(
     const transactionIds: string[] = [];
     let allConfirmed = true; // Track overall success
 
+    const release = await buyMutex.acquire();
     try {
          
         // Fetch priority fee data
@@ -141,9 +143,11 @@ export async function raySwapBuy(
     } catch (error) {
         console.error("❌ Error executing swap:", error);
         return { confirmed: false, txIds: [] };
+    } finally {
+        // Release the mutex lock
+        release();
     }
 }
-
 
 export async function raySwapSell(
     connection: Connection,

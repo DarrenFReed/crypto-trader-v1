@@ -52,7 +52,7 @@ export async function startTokenMonitoring(
 
         // Check if the Raydium AMM program is involved
         if (!transactionAccounts.includes(RAYDIUM_AMM_PROGRAM_ID.toBase58())) {
-          console.log(`❌ Transaction ${signature} is NOT a Raydium swap, skipping.`);
+         //console.log(`❌ Transaction ${signature} is NOT a Raydium swap, skipping.`);
           return;
         }
 
@@ -100,7 +100,7 @@ export async function startTokenMonitoring(
 
         // If no token movement, skip
         if (!raydiumTokenChange || raydiumTokenChange.change === 0) {
-          console.log(`⚠️ Transaction ${signature} does not involve the token swap.`);
+          //console.log(`⚠️ Transaction ${signature} does not involve the token swap.`);
           return;
         }
 

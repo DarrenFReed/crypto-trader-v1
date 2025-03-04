@@ -11,6 +11,7 @@ import { getWalletKeypair } from './src/helpers/wallet-utils';
 //import { runTrendUpdater } from './src/trend/trend-updater';
 import { wrapSOL } from './src/helpers/wrap-sol';
 import { subscribeToWalletChanges } from './src/listeners/walletMonitor';
+import { Mutex } from 'async-mutex';
 
 import {
   getToken,
@@ -106,6 +107,8 @@ const runListener = async () => {
   const marketCache = new MarketCache(connection);
   const poolCache = new PoolCache();
   let txExecutor: TransactionExecutor;
+  const buyMutex = new Mutex();
+
 
   switch (TRANSACTION_EXECUTOR) {
     case 'warp': {
@@ -127,7 +130,7 @@ const runListener = async () => {
   
   const quoteToken = getToken(QUOTE_MINT);
   
-  const wsolAddress = await wrapSOL(connection, wallet, 200000000);
+  //const wsolAddress = await wrapSOL(connection, wallet, 200000000);
   
   await subscriptionManager.clearAllSubscriptions();
 
@@ -210,9 +213,15 @@ const runListener = async () => {
     if (accountData.mint.equals(quoteToken.mint)) {
       return;
     }
-
-     //bot.sell(updatedAccountInfo.accountId, accountData);
-  });
+    const release = await buyMutex.acquire();
+    try {
+        // Perform the sell operation
+        await bot.sell(updatedAccountInfo.accountId, accountData);
+    } finally {
+        // Release the mutex lock
+        release();
+    }
+});
 
   printDetails(wallet, quoteToken, bot);
 };
