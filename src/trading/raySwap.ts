@@ -321,7 +321,7 @@ async function fetchTransactionDetails(
     let price: number;
     
     if (wsolChange && tokenChange) {
-        price = Math.abs(wsolChange.change / tokenChange.change);  // SOL per token
+        price = Math.abs(wsolChange.change) / Math.abs(tokenChange.change);  // SOL per token
     } else {
         throw new Error('Token change data is undefined.');
     }
