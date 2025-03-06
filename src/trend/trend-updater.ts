@@ -39,12 +39,12 @@ export async function startTokenMonitoring(
         });
 
         if (!parsedTransaction || !parsedTransaction.meta) {
-          console.log(`⚠️ No valid transaction data found for ${signature}`);
+          //console.log(`⚠️ No valid transaction data found for ${signature}`);
           return;
         }
 
         // Save the parsed transaction to a file for debugging
-        fs.appendFileSync(`${tokenMint}.json`, JSON.stringify(parsedTransaction, null, 2));
+        //fs.appendFileSync(`${tokenMint}.json`, JSON.stringify(parsedTransaction, null, 2));
 
         const transactionAccounts = parsedTransaction.transaction.message.accountKeys.map((key) =>
           key.pubkey.toBase58(),

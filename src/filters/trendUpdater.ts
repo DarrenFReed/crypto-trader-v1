@@ -55,7 +55,6 @@ async function updateTokenMetrics(connection: Connection, tokenMint: string) {
                 sellVolume: sellVolume,
                 buySellTxRatio: buySellTxRatio,
                 buySellVolumeRatio: buySellVolumeRatio,
-                holdersCount: holdersCount,
                 createdAt: new Date(), // Ensures single timestamp per update
             },
             create: {
@@ -66,7 +65,6 @@ async function updateTokenMetrics(connection: Connection, tokenMint: string) {
                 sellVolume: sellVolume,
                 buySellTxRatio: buySellTxRatio,
                 buySellVolumeRatio: buySellVolumeRatio,
-                holdersCount: holdersCount,
                 createdAt: new Date(),
             },
         });

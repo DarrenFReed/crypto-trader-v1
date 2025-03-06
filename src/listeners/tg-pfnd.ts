@@ -3,6 +3,7 @@ import { StringSession } from 'telegram/sessions/index.js'; // Add explicit file
 import { NewMessage } from 'telegram/events/index.js'; // Add explicit file
 import * as readlineSync from 'readline-sync';
 import * as fs from 'fs';
+import { Connection} from '@solana/web3.js';
 
 // Replace with your Telegram API credentials
 const apiId = 25415528; // Get it from https://my.telegram.org
@@ -38,6 +39,34 @@ function extractContractAddress(message: string): string | null {
     const match = message.match(caRegex);
     return match ? match[0] : null;
   }
+
+
+  async function getRaydiumPoolData(connection: Connection, tokenMint: string): Promise<RaydiumPool | null> {
+    try {
+        // Fetch Raydium pool data from their API
+        const url = 'https://api.raydium.io/v2/sdk/liquidity/mainnet.json';
+        const response = await axios.get<{ official: RaydiumPool[] }>(url);
+        const pools = response.data.official;
+
+        // Find the pool that contains the token mint
+        const pool = pools.find(p => 
+            p.baseMint === tokenMint || p.quoteMint === tokenMint
+        );
+
+        if (pool) {
+            console.log('Pool Data:', pool);
+            return pool;
+        } else {
+            console.log('No pool found for the given token mint.');
+            return null;
+        }
+    } catch (error) {
+        console.error('Error fetching pool data:', error);
+        throw error; // Re-throw the error for handling upstream
+    }
+}
+
+
 
 async function main() {
   console.log('Starting Telegram client...');

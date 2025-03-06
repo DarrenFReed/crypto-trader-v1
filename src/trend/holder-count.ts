@@ -4,7 +4,7 @@ import chalk from 'chalk';
 import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
 
 const prisma = new PrismaClient();
-const UPDATE_INTERVAL_MS = 20000; // ⏳
+const UPDATE_INTERVAL_MS = 10000; // ⏳
 
 /**
  * Fetches unique wallet count (holders) for a given token.

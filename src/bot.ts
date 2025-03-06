@@ -182,8 +182,9 @@ export class Bot {
           
 //SWAP CALLED HERE
           //const lamports = Number(this.config.quoteAmount) * 1_000_000_000; // Multiply using bigint
-          const lamports = 2000000
-         
+          //const lamports =  100000000
+          //const lamports =  100000000
+          const lamports =  50000000
           const swapResult = await raySwapBuy(this.connection, poolKeys.quoteMint.toString(), poolKeys.baseMint.toString(), lamports);
           console.log("Transaction IDs:", swapResult);
           
@@ -253,7 +254,9 @@ export class Bot {
 
       const poolKeys: LiquidityPoolKeysV4 = createPoolKeys(new PublicKey(poolData.id), poolData.state, market);
 
-      const priceCheckResult = await this.priceMatchV1(tokenAmountIn, new PublicKey(poolData.id), rawAccount.mint.toString());
+
+
+      const priceCheckResult = await this.priceWatchV1WithCSL(tokenAmountIn, new PublicKey(poolData.id), rawAccount.mint.toString());
       //await this.priceMatchV1(tokenAmountIn, new PublicKey(poolData.id),rawAccount.mint.toString());
 
       for (let i = 0; i < this.config.maxSellRetries; i++) {
@@ -509,6 +512,10 @@ private async priceMatchV1(
   const stopLossMultiplier = 1 - this.config.stopLoss / 100; // Example: 10% → 0.9
 
   let timesChecked = 0;
+  let tpTriggered = false;
+  let tpTriggerCount = 0;
+  let slTriggered = false;
+  let slTriggerCount = 0;
 
   do {
     try {
@@ -572,14 +579,39 @@ private async priceMatchV1(
 
       console.log(`📊 Profit/Loss %: ${profitPercent.toFixed(2)}%`);
 
+//TAKE PROFIT      
+      // Take Profit Logic
       if (currentPrice >= purchasePrice * takeProfitMultiplier) {
-        console.log(`✅ Take profit triggered! Sold at ${currentPrice}`);
-        return 'take-profit';
+        if (tpTriggerCount >= 2) {
+          tpTriggerCount = 0; // Reset TP trigger count
+          console.log(`✅ Take profit triggered twice. Exiting.`);
+          return 'take-profit';
+        } else {
+          tpTriggerCount++; // Increment TP trigger count
+          console.log(`✅ Take profit triggered ${tpTriggerCount} time(s). Current: ${currentPrice}`);
+        }
+      } else {
+        tpTriggerCount = 0; // Reset TP trigger count if price drops below TP threshold
+        console.log(`🔄 Price dropped below TP level. Resetting TP trigger count.`);
       }
 
+/*       if (currentPrice >= purchasePrice * takeProfitMultiplier) {
+        console.log(`✅ Take profit triggered! Sold at ${currentPrice}`);
+        return 'take-profit';
+      } */
+//STOP LOSS
       if (currentPrice <= purchasePrice * stopLossMultiplier) {
-        console.log(`❌ Stop loss triggered! Sold at ${currentPrice}`);
-        return 'stop-loss';
+        if (slTriggerCount >= 2) {
+          slTriggerCount = 0; // Reset SL trigger count
+          console.log(`❌ Stop loss triggered twice. Exiting.`);
+          return 'stop-loss';
+        } else {
+          slTriggerCount++; // Increment SL trigger count
+          console.log(`❌ Stop loss triggered ${slTriggerCount} time(s). Current: ${currentPrice}`);
+        }
+      } else {
+        slTriggerCount = 0; // Reset SL trigger count if price rises above SL threshold
+        console.log(`🔄 Price dpopped below SL level. Resetting SL trigger count.`);
       }
 
       await sleep(this.config.priceCheckInterval);
@@ -597,7 +629,158 @@ private async priceMatchV1(
 
 
 
+private async priceWatchV1WithCSL(
+  amountIn: TokenAmount,
+  poolID: PublicKey,
+  baseAddress: string
+): Promise<'take-profit' | 'stop-loss' | 'timeout'> {
+  if (this.config.priceCheckDuration === 0 || this.config.priceCheckInterval === 0) {
+    return 'take-profit'; // Skip price check if not configured
+  }
 
+  const WSOL_MINT = 'So11111111111111111111111111111111111111112';
+  const LAMPORTS_PER_SOL = 1_000_000_000;
+
+  // Fetch the last trade price from the database
+  const maxRetries = 7;
+  const delayMs = 3000; // 1 second retry delay
+  let lastTrade: { price: number } | null = null;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    lastTrade = await prisma.trade.findFirst({
+      where: { tokenBaseAddress: baseAddress },
+      orderBy: { executedAt: 'desc' },
+      select: { price: true },
+    });
+
+    if (lastTrade) {
+      console.log(`✅ Trade record found in database for ${baseAddress} after ${attempt} attempt(s).`);
+      break;
+    }
+
+    console.log(`⏳ Waiting for trade record... Attempt ${attempt}/${maxRetries}`);
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+
+  if (!lastTrade) {
+    console.error("❌ No trade history found. Exiting price check.");
+    return 'timeout';
+  }
+
+  const purchasePrice = lastTrade.price; // ✅ Directly using float value
+  const takeProfitMultiplier = 1 + this.config.takeProfit / 100; // Example: 10% → 1.1
+  const initialStopLossMultiplier = 1 - 0.3; // Initial stop loss at 30%
+  const trailingStopLossMultiplier = 1 - 0.1; // Trailing stop loss at 10%
+
+  let timesChecked = 0;
+  let tpTriggered = false;
+  let tpTriggerCount = 0;
+  let slTriggerCount = 0 ;
+  let trailingStopLossActivated = false; // Flag to track if trailing stop loss is active
+  let trailingStopLossThreshold = purchasePrice * initialStopLossMultiplier; // Start with initial stop loss
+  let highestPrice = purchasePrice; // Track the highest price reached
+
+  do {
+    try {
+      // Fetch the pool's account data
+      const poolAccountInfo = await this.connection.getAccountInfo(poolID);
+
+      if (!poolAccountInfo?.data) {
+        console.error(`❌ No Raydium pool data available for ${poolID.toString()}`);
+        return 'timeout';
+      }
+
+      // Decode the pool state using Raydium's liquidity state layout
+      const poolState = LIQUIDITY_STATE_LAYOUT_V4.decode(poolAccountInfo.data);
+
+      // Identify whether WSOL is the base mint
+      const isWsolBase = poolState.baseMint.toString() === WSOL_MINT;
+
+      // Fetch the base vault and quote vault accounts
+      const baseVault = new PublicKey(poolState.baseVault);
+      const quoteVault = new PublicKey(poolState.quoteVault);
+
+      // Fetch base & quote reserves
+      const baseVaultInfo = await this.connection.getAccountInfo(baseVault);
+      const quoteVaultInfo = await this.connection.getAccountInfo(quoteVault);
+
+      if (!baseVaultInfo?.data || !quoteVaultInfo?.data) {
+        throw new Error('Vault account data missing.');
+      }
+
+      const baseReserve = new BN(splAccountLayout.decode(baseVaultInfo.data).amount.toString());
+      const quoteReserve = new BN(splAccountLayout.decode(quoteVaultInfo.data).amount.toString());
+
+      // Convert reserves to human-readable amounts
+      const baseReserveHuman = isWsolBase
+        ? baseReserve.toNumber() / LAMPORTS_PER_SOL // Convert lamports to SOL
+        : baseReserve.toNumber() / Math.pow(10, poolState.baseDecimal.toNumber()); // Adjust for token decimals
+
+      const quoteReserveHuman = isWsolBase
+        ? quoteReserve.toNumber() / Math.pow(10, poolState.quoteDecimal.toNumber()) // Adjust for token decimals
+        : quoteReserve.toNumber() / LAMPORTS_PER_SOL; // Convert lamports to SOL
+
+      // Calculate the current price based on reserves
+      const currentPrice = isWsolBase
+        ? baseReserveHuman / quoteReserveHuman // Price = SOL per token
+        : quoteReserveHuman / baseReserveHuman; // Price = SOL per token
+
+      console.log(`📈 Current Price: ${currentPrice} | Purchase Price: ${purchasePrice}`);
+
+      // Calculate price change percentage
+      const priceChange = (currentPrice / purchasePrice) - 1;
+      const profitPercent = priceChange * 100;
+
+      console.log(`📊 Profit/Loss %: ${profitPercent.toFixed(2)}%`);
+
+      // Update highest price and trailing stop loss threshold
+      if (currentPrice > highestPrice) {
+        highestPrice = currentPrice; // Update highest price
+        if (!trailingStopLossActivated && currentPrice >= purchasePrice * 1.1) {
+          // Activate trailing stop loss once the price rises 10% above purchase price
+          trailingStopLossActivated = true;
+          console.log(`🚀 Trailing stop loss activated at ${currentPrice}`);
+        }
+        if (trailingStopLossActivated) {
+          trailingStopLossThreshold = highestPrice * trailingStopLossMultiplier; // Update trailing stop loss threshold
+          console.log(`🔄 Updated trailing stop loss threshold: ${trailingStopLossThreshold}`);
+        }
+      }
+
+
+      // Stop Loss Logic
+      if (currentPrice <= trailingStopLossThreshold) {
+        console.log(`🔴 Stop-loss triggered at ${currentPrice}`);
+        return 'stop-loss';
+      }
+
+      // Take Profit Logic
+      if (currentPrice >= purchasePrice * takeProfitMultiplier) {
+        if (tpTriggerCount >= 2) {
+          tpTriggerCount = 0; // Reset TP trigger count
+          console.log(`✅ Take profit triggered twice. Exiting.`);
+          return 'take-profit';
+        } else {
+          tpTriggerCount++; // Increment TP trigger count
+          console.log(`✅ Take profit triggered ${tpTriggerCount} time(s). Current: ${currentPrice}`);
+        }
+      } else {
+        tpTriggerCount = 0; // Reset TP trigger count if price drops below TP threshold
+        console.log(`🔄 Price dropped below TP level. Resetting TP trigger count.`);
+      }
+
+
+      await sleep(this.config.priceCheckInterval);
+    } catch (e) {
+      console.error(`⚠️ Failed to check token price for ${poolID.toString()}`, e);
+    } finally {
+      timesChecked++;
+    }
+  } while (timesChecked < this.config.priceCheckDuration / this.config.priceCheckInterval);
+
+  console.log("⏳ Price check completed. No action triggered.");
+  return 'timeout';
+}
 
 
 

@@ -130,7 +130,7 @@ const runListener = async () => {
   
   const quoteToken = getToken(QUOTE_MINT);
   
-  //const wsolAddress = await wrapSOL(connection, wallet, 200000000);
+  const wsolAddress = await wrapSOL(connection, wallet, 200000000);
   
   await subscriptionManager.clearAllSubscriptions();
 

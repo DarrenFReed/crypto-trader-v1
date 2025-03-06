@@ -94,15 +94,17 @@ export class TrendFilters {
       where: { tokenBaseAddress: tokenMint },
       orderBy: { createdAt: 'asc' },
     });
+
     const holdersCounts = holderRecords.length ? holderRecords.map((h) => h.holdersCount) : [];
     //const slopeHolders = this.calculateSlope(holdersCounts);
-    const smoothedHoldersCounts = holdersCounts.map((_, i, arr) => {
-      const window = arr.slice(Math.max(0, i - 2), i + 3);
-      return window.reduce((sum, val) => sum + val, 0) / window.length;
-    });
-    const slopeHolders = this.calculateSlope(smoothedHoldersCounts);
+    const slopeHolders = this.calculateSlope(holdersCounts);
     // Sell participation ratio
-    const sellParticipationRatio = sellCount > 0 ? sellCount / buyCount : 0;
+    
+    const totalTrades = buyCount + sellCount;
+    const sellParticipationRatio = totalTrades > 0 ? sellCount / totalTrades : 0;
+    
+    
+    //const sellParticipationRatio = sellCount > 0 ? sellCount / buyCount : 0;
     //const sellParticipationRatio = totalVolume > 0 ? sellVolume / totalVolume : 0;
 
     //const liquidityValues = transactions.map((tx) => tx.liquidity || 0); // Use liquidity from transactions if available
@@ -128,9 +130,9 @@ export class TrendFilters {
     const hasStrongBuyInterest =
       //buySellTxRatio > 0 &&
       buySellVolumeRatio > 0 &&
-      holdersCounts[holdersCounts.length - 1] > 75 &&
-      isTrendingUp &&
-      sellParticipationRatio > MIN_SELL_PARTICIPATION; // Prevent Honeypots
+      holdersCounts[holdersCounts.length - 1] > 50 &&
+      isTrendingUp
+      //sellParticipationRatio > MIN_SELL_PARTICIPATION; // Prevent Honeypots
 
     if (hasStrongBuyInterest) {
       console.log(`🚀 ${tokenMint} is trending up! Marking as BUY_CANDIDATE.`);
@@ -146,17 +148,19 @@ export class TrendFilters {
   }
 
   private static calculateSlope(data: number[]): number {
-    if (data.length < 2) return 0;
-
-    // Apply a moving average filter (5-point window)
-    const smoothedData = data.map((_, i, arr) => {
-      const window = arr.slice(Math.max(0, i - 2), i + 3);
+    if (data.length < 2) return 0; // Not enough data points to calculate a slope
+  
+    // Skip smoothing if there are fewer than 5 data points
+    const smoothedData = data.length < 5 ? data : data.map((_, i, arr) => {
+      const windowSize = 2; // Adjust window size as needed
+      const window = arr.slice(Math.max(0, i - windowSize), Math.min(i + windowSize + 1, arr.length));
       return window.reduce((sum, val) => sum + val, 0) / window.length;
     });
-
+  
+    // Calculate slope using linear regression
     const xValues = smoothedData.map((_, i) => i);
     const pairedData = xValues.map((x, i) => [x, smoothedData[i]]);
-
+  
     const regression = ss.linearRegression(pairedData);
     return regression.m; // Return slope (m)
   }
