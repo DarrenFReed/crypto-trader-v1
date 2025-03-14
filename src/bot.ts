@@ -29,10 +29,11 @@ import { SubscriptionManager } from './services/subscription-manager'; // Manage
 import { PrismaClient } from '@prisma/client'; // Database ORM
 import { MarketCapFilter } from './filters/market-cap.filter';
 import { stopMonitoring } from './helpers/monitoring-manager';
-import { MAINNET_PROGRAM_ID, MARKET_STATE_LAYOUT_V3 } from '@raydium-io/raydium-sdk';
+import { MAINNET_PROGRAM_ID, MARKET_STATE_LAYOUT_V3,   ApiPoolInfoV4, SPL_MINT_LAYOUT, Market} from '@raydium-io/raydium-sdk';
 import { fetchPoolData } from './helpers/fetchPoolData';
 import { raySwapBuy, raySwapSell } from './trading/raySwap';
 import { AccountType, splAccountLayout } from '@raydium-io/raydium-sdk-v2';
+import { getPoolKeys} from './helpers/testFindingPoolID';
 
 const prisma = new PrismaClient();
 
@@ -46,6 +47,7 @@ export interface BotConfig {
   maxPoolSize: TokenAmount;
   minMarketCap?: number; // Add this
   maxMarketCap?: number; // Add this
+  topHolderThreshold?: number;
   quoteToken: Token;
   quoteAmount: TokenAmount;
   quoteAta: PublicKey;
@@ -102,6 +104,7 @@ export class Bot {
       maxPoolSize: this.config.maxPoolSize,
       minMarketCap: this.config.minMarketCap, // Add minMarketCap
       maxMarketCap: this.config.maxMarketCap, // Add maxMarketCap
+      topHolderThreshold: this.config.topHolderThreshold,
     });
 
     if (this.config.useSnipeList) {
@@ -127,6 +130,116 @@ export class Bot {
 
     return true;
   }
+
+
+/* public async buy(accountId: PublicKey, poolState: LiquidityStateV4) {
+    logger.trace({ mint: poolState.baseMint }, `Processing new pool...`);
+
+    if (this.config.useSnipeList && !this.snipeListCache?.isInList(poolState.baseMint.toString())) {
+      logger.debug({ mint: poolState.baseMint.toString() }, `Skipping buy because token is not in a snipe list`);
+      return;
+    }
+
+    if (this.config.autoBuyDelay > 0) {
+      logger.debug({ mint: poolState.baseMint }, `Waiting for ${this.config.autoBuyDelay} ms before buy`);
+      await sleep(this.config.autoBuyDelay);
+    }
+
+    if (this.config.oneTokenAtATime) {
+      if (this.mutex.isLocked() || this.sellExecutionCount > 0) {
+        logger.debug(
+          { mint: poolState.baseMint.toString() },
+          `Skipping buy because one token at a time is turned on and token is already being processed`,
+        );
+        return;
+      }
+
+      await this.mutex.acquire();
+    }
+
+    try {
+      const [market, mintAta] = await Promise.all([
+        this.marketStorage.get(poolState.marketId.toString()),
+        getAssociatedTokenAddress(poolState.baseMint, this.config.wallet.publicKey),
+      ]);
+      
+     //filter match
+      //const poolKeys: LiquidityPoolKeysV4 = createPoolKeys(accountId, poolState, market);
+      const poolKeys: LiquidityPoolKeysV4 = await getPoolKeys(this.connection, poolState.baseMint.toString());
+
+      
+      if (!this.config.useSnipeList || !this.config.useTGFeed) {
+        const match = await this.filterMatch(poolKeys);
+
+        if (!match) {
+          logger.trace({ mint: poolKeys.baseMint.toString() }, `Skipping buy because pool doesn't match filters`);
+          return;
+        }
+      }
+
+      for (let i = 0; i < this.config.maxBuyRetries; i++) {
+        try {
+          logger.info(
+            { mint: poolState.baseMint.toString() },
+            `Send buy transaction attempt: ${i + 1}/${this.config.maxBuyRetries}`,
+          );
+          const tokenOut = new Token(TOKEN_PROGRAM_ID, poolKeys.baseMint, poolKeys.baseDecimals);
+          const result = await this.swap(
+            poolKeys,
+            this.config.quoteAta,
+            mintAta,
+            this.config.quoteToken,
+            tokenOut,
+            this.config.quoteAmount,
+            this.config.buySlippage,
+            this.config.wallet,
+            'buy',
+          );
+
+          if (result.confirmed) {
+            logger.info(
+              {
+                mint: poolState.baseMint.toString(),
+                signature: result.signature,
+                url: `https://solscan.io/tx/${result.signature}?cluster=${NETWORK}`,
+              },
+              `Confirmed buy tx`,
+            );
+
+            await prisma.token.update({
+              where: { baseAddress: poolState.baseMint.toString() },
+              data: { tokenStatus: 'BOUGHT' },
+            });
+        
+
+            break;
+          }
+
+          logger.info(
+            {
+              mint: poolState.baseMint.toString(),
+              signature: result.signature,
+              error: result.error,
+            },
+            `Error confirming buy tx`,
+          );
+        } catch (error) {
+          logger.debug({ mint: poolState.baseMint.toString(), error }, `Error confirming buy transaction`);
+        }
+      }
+    } catch (error) {
+      logger.error({ mint: poolState.baseMint.toString(), error }, `Failed to buy token`);
+    } finally {
+      if (this.config.oneTokenAtATime) {
+        this.mutex.release();
+      }
+    }
+  } */
+
+
+
+
+
 
   public async buy(accountId: PublicKey, poolState: LiquidityStateV4) {
     logger.trace({ mint: poolState.baseMint }, `Processing new pool...`);
@@ -161,7 +274,6 @@ export class Bot {
       
      //filter match
       const poolKeys: LiquidityPoolKeysV4 = createPoolKeys(accountId, poolState, market);
-
       if (!this.config.useSnipeList || !this.config.useTGFeed) {
         const match = await this.filterMatch(poolKeys);
 
@@ -171,7 +283,6 @@ export class Bot {
         }
       }
 
-//set this to newPollKeys for test
       for (let i = 0; i < this.config.maxBuyRetries; i++) {
         try {
           logger.info(
@@ -181,10 +292,8 @@ export class Bot {
           const tokenOut = new Token(TOKEN_PROGRAM_ID, poolKeys.baseMint, poolKeys.baseDecimals);
           
 //SWAP CALLED HERE
-          //const lamports = Number(this.config.quoteAmount) * 1_000_000_000; // Multiply using bigint
-          //const lamports =  100000000
-          //const lamports =  100000000
-          const lamports =  50000000
+          //const lamports =  10000000
+          const lamports =  100000000
           const swapResult = await raySwapBuy(this.connection, poolKeys.quoteMint.toString(), poolKeys.baseMint.toString(), lamports);
           console.log("Transaction IDs:", swapResult);
           
@@ -199,14 +308,6 @@ export class Bot {
             console.error("❌ Swap failed, skipping database update.");
           }
 
-/*           logger.info(
-            {
-              mint: poolState.baseMint.toString(),
-              signature: result.signature,
-              error: result.error,
-            },
-            `Error confirming buy tx`,
-          ); */
         } catch (error) {
           logger.debug({ mint: poolState.baseMint.toString(), error }, `Error confirming buy transaction`);
         }
@@ -312,25 +413,10 @@ export class Bot {
     direction: 'buy' | 'sell',
   ) {
     const slippagePercent = new Percent(slippage, 100);
-    
-    
-    //Darren added to as possible fix
-   
-
-    //poolKeys.id = new PublicKey(poolKeys.id);
-  
-    const [market, mintAta] = await Promise.all([
-      this.marketStorage.get(poolKeys.marketId.toString()),
-      getAssociatedTokenAddress(poolKeys.baseMint, this.config.wallet.publicKey),
-    ]);
-    
-   //filter match
-    
     const poolInfo = await Liquidity.fetchInfo({
       connection: this.connection,
       poolKeys,
     });
-
 
     const computedAmountOut = Liquidity.computeAmountOut({
       poolKeys,
@@ -386,6 +472,7 @@ export class Bot {
     return this.txExecutor.executeAndConfirm(transaction, wallet, latestBlockhash);
   }
   
+  
   private async filterMatch(poolKeys: LiquidityPoolKeysV4) {
     if (this.config.filterCheckInterval === 0 || this.config.filterCheckDuration === 0) {
         return true;
@@ -427,7 +514,7 @@ export class Bot {
             }
 
             // ✅ Check trend filters, but don’t consume iteration if they fail
-            if (!trendPassed) {
+           /*  if (!trendPassed) {
               trendPassed = (await TrendFilters.evaluateToken(poolKeys.baseMint.toString())) ?? false;
               if (!trendPassed) {
                   logger.trace(`⏳ Trend filters not passing yet. Retrying... (${timesChecked + 1}/${timesToCheck})`);
@@ -436,10 +523,10 @@ export class Bot {
                   continue;
               }
               logger.trace(`✅ Trend filters passed.`);
-          }
+          } */
 
             // ✅ If both have passed, we exit successfully
-            if (poolPassed && trendPassed) {
+            if (poolPassed) {
                 logger.debug(
                     { mint: poolKeys.baseMint.toString() },
                     `✅ Token passed both pool & trend filters. Ready for buy.`
@@ -642,7 +729,7 @@ private async priceWatchV1WithCSL(
   const LAMPORTS_PER_SOL = 1_000_000_000;
 
   // Fetch the last trade price from the database
-  const maxRetries = 7;
+  const maxRetries = 6;
   const delayMs = 3000; // 1 second retry delay
   let lastTrade: { price: number } | null = null;
 
@@ -669,13 +756,14 @@ private async priceWatchV1WithCSL(
 
   const purchasePrice = lastTrade.price; // ✅ Directly using float value
   const takeProfitMultiplier = 1 + this.config.takeProfit / 100; // Example: 10% → 1.1
-  const initialStopLossMultiplier = 1 - 0.3; // Initial stop loss at 30%
-  const trailingStopLossMultiplier = 1 - 0.1; // Trailing stop loss at 10%
+  const initialStopLossMultiplier = 1 - 0.35; // Initial stop loss at 30%
+  const trailingStopLossMultiplier = 1 - 0.15; // Trailing stop loss at 10%
 
   let timesChecked = 0;
   let tpTriggered = false;
   let tpTriggerCount = 0;
   let slTriggerCount = 0 ;
+  let stopLossTriggered = false;
   let trailingStopLossActivated = false; // Flag to track if trailing stop loss is active
   let trailingStopLossThreshold = purchasePrice * initialStopLossMultiplier; // Start with initial stop loss
   let highestPrice = purchasePrice; // Track the highest price reached
@@ -747,12 +835,37 @@ private async priceWatchV1WithCSL(
         }
       }
 
+      if (currentPrice <= trailingStopLossThreshold) {
+        if (!stopLossTriggered) {
+          // First time stop-loss is triggered
+          stopLossTriggered = true;
+          slTriggerCount = 1; // Start confirmation counter
+          console.log(`⚠️ Stop-loss condition met. Waiting for confirmation...`);
+        } else {
+          // Stop-loss was already triggered, increment confirmation counter
+          slTriggerCount++;
+          console.log(`⚠️ Stop-loss confirmation check ${slTriggerCount}/2`);
+        }
+  
+        // If price remains below threshold for 2 consecutive checks, execute sell
+        if (slTriggerCount >= 2) {
+          console.log(`🔴 Stop-loss confirmed at ${currentPrice}. Executing sell...`);
+          return 'stop-loss';
+        }
+      } else {
+        // Price recovered above threshold, reset stop-loss trigger and confirmation counter
+        if (stopLossTriggered) {
+          console.log(`🟢 Price recovered above stop-loss threshold. Resetting confirmation...`);
+          stopLossTriggered = false;
+          slTriggerCount = 0;
+        }
+      }
 
       // Stop Loss Logic
-      if (currentPrice <= trailingStopLossThreshold) {
+/*       if (currentPrice <= trailingStopLossThreshold) {
         console.log(`🔴 Stop-loss triggered at ${currentPrice}`);
         return 'stop-loss';
-      }
+      } */
 
       // Take Profit Logic
       if (currentPrice >= purchasePrice * takeProfitMultiplier) {
@@ -782,18 +895,7 @@ private async priceWatchV1WithCSL(
   return 'timeout';
 }
 
-
-
-
-
-
-
-
-
-
-
-
-  private async priceMatch(amountIn: TokenAmount, poolKeys: LiquidityPoolKeysV4) {
+   private async priceMatch(amountIn: TokenAmount, poolKeys: LiquidityPoolKeysV4) {
     if (this.config.priceCheckDuration === 0 || this.config.priceCheckInterval === 0) {
       return;
     }

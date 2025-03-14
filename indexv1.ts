@@ -5,6 +5,7 @@ import { AccountLayout, getAssociatedTokenAddressSync } from '@solana/spl-token'
 import { Bot, BotConfig } from './src/bot';
 import { DefaultTransactionExecutor, TransactionExecutor } from './src/transactions';
 import { tokenEmitter, startMonitoring, stopMonitoring } from './src/listeners/new-tokens';
+import { startTgMonitor, tgMonitorEmitter  } from './src/listeners/tg-levelUp';
 import { SubscriptionManager } from './src/services/subscription-manager';
 import readline from 'readline';
 import { getWalletKeypair } from './src/helpers/wallet-utils';
@@ -12,6 +13,7 @@ import { getWalletKeypair } from './src/helpers/wallet-utils';
 import { wrapSOL } from './src/helpers/wrap-sol';
 import { subscribeToWalletChanges } from './src/listeners/walletMonitor';
 import { Mutex } from 'async-mutex';
+
 
 import {
   getToken,
@@ -61,6 +63,7 @@ import {
   CONSECUTIVE_FILTER_MATCHES,
   MIN_MARKET_CAP,
   MAX_MARKET_CAP,
+  TOP_HOLDER_THRESHOLD,
   QUOTE_TOKEN_MINT,
   RAYDIUM_PROGRAM_ID,
 } from './src/helpers';
@@ -146,6 +149,7 @@ const runListener = async () => {
     maxPoolSize: new TokenAmount(quoteToken, MAX_POOL_SIZE, false),
     minMarketCap: MIN_MARKET_CAP, // Add this
     maxMarketCap: MAX_MARKET_CAP,
+    topHolderThreshold: TOP_HOLDER_THRESHOLD,
     quoteToken,
     quoteAmount: new TokenAmount(quoteToken, QUOTE_AMOUNT, false),
     oneTokenAtATime: ONE_TOKEN_AT_A_TIME,
@@ -185,6 +189,7 @@ const runListener = async () => {
 
   // ✅ Start monitoring new tokens and wallet changes
   await startMonitoring(connection, newTokenConnection, txConnection, wallet.publicKey);
+  startTgMonitor(connection, '@pumpfunnevadie');
 
   tokenEmitter.on('market', (marketInfo) => {
     if (!marketInfo || !marketInfo.data) {
@@ -206,6 +211,12 @@ const runListener = async () => {
       await bot.buy(poolState.poolId, poolState.poolData);
     }
   });
+
+/*   tgMonitorEmitter.on('tokenAndPoolData', ({ tokenMint, poolData }) => {
+    console.log('Token and Pool Data Retrieved:');
+    console.log('Token Mint:', tokenMint);
+    console.log('Pool Data:', poolData);
+  }); */
 
   tokenEmitter.on('wallet', async (updatedAccountInfo: KeyedAccountInfo) => {
     const accountData = AccountLayout.decode(updatedAccountInfo.accountInfo.data);

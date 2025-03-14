@@ -29,6 +29,7 @@
     "helius-sdk": "^1.4.2",
     "i": "^0.3.7",
     "jsbi": "^4.3.0",
+    "node-fetch": "^3.3.2",
     "node-telegram-bot-api": "^0.66.0",
     "npm": "^10.5.2",
     "pino": "^8.18.0",

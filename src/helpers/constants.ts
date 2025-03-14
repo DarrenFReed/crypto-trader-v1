@@ -81,5 +81,6 @@ export const USE_TG_FEED = retrieveEnvVariable('USE_TG_FEED', logger) === 'true'
 export const SNIPE_LIST_REFRESH_INTERVAL = Number(retrieveEnvVariable('SNIPE_LIST_REFRESH_INTERVAL', logger));
 export const MIN_MARKET_CAP = parseFloat(retrieveEnvVariable('MIN_MARKET_CAP', logger) as string);
 export const MAX_MARKET_CAP = parseFloat(retrieveEnvVariable('MAX_MARKET_CAP', logger) as string);
+export const TOP_HOLDER_THRESHOLD = Number(retrieveEnvVariable('TOP_HOLDER_THRESHOLD', logger));
 
 

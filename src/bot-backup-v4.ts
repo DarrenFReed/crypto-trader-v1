@@ -14,7 +14,7 @@ import {
   RawAccount,
   TOKEN_PROGRAM_ID,
 } from '@solana/spl-token';
-import { Liquidity, LiquidityPoolKeysV4, LiquidityStateV4,LIQUIDITY_STATE_LAYOUT_V4, Percent, Token, TokenAmount } from '@raydium-io/raydium-sdk';
+import { Liquidity, LiquidityPoolKeysV4, LiquidityStateV4,LIQUIDITY_STATE_LAYOUT_V4, Percent, Token, TokenAmount, formatAmmKeysById } from '@raydium-io/raydium-sdk';
 import { MarketCache, PoolCache, SnipeListCache } from './cache';
 import { PoolFilters } from './filters';
 import { TransactionExecutor } from './transactions';
@@ -346,18 +346,14 @@ export class Bot {
     const slippagePercent = new Percent(slippage, 100);
     
     
-    //Darren added to as possible fix
+    //************Darren added to as possible fix
    
+    const newPoolKeys = formatAmmKeysById(poolID)
 
-    //poolKeys.id = new PublicKey(poolKeys.id);
-  
-   import { fetchPoolData } from '../helpers/fetchPoolData';
-
-
-
+    //***************************************** */
     const poolInfo = await Liquidity.fetchInfo({
       connection: this.connection,
-      poolKeys,
+      newPoolKeys,
     });
 
     const computedAmountOut = Liquidity.computeAmountOut({

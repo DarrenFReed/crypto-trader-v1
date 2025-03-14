@@ -3,7 +3,8 @@ import { StringSession } from 'telegram/sessions/index.js'; // Add explicit file
 import { NewMessage } from 'telegram/events/index.js'; // Add explicit file
 import * as readlineSync from 'readline-sync';
 import * as fs from 'fs';
-import { Connection} from '@solana/web3.js';
+import { Connection, PublicKey } from '@solana/web3.js';
+import Axios from 'axios';
 
 // Replace with your Telegram API credentials
 const apiId = 25415528; // Get it from https://my.telegram.org
@@ -40,38 +41,73 @@ function extractContractAddress(message: string): string | null {
     return match ? match[0] : null;
   }
 
-
-  async function getRaydiumPoolData(connection: Connection, tokenMint: string): Promise<RaydiumPool | null> {
+  
+  interface RaydiumPool {
+    baseMint: string;
+    quoteMint: string;
+    lpMint: string;
+    poolId: string;
+    // Add other fields as needed
+  }
+  
+  async function getRaydiumPoolData(
+    heliusConnection: Connection,
+    tokenMint: string
+  ): Promise<RaydiumPool | null> {
     try {
-        // Fetch Raydium pool data from their API
-        const url = 'https://api.raydium.io/v2/sdk/liquidity/mainnet.json';
-        const response = await axios.get<{ official: RaydiumPool[] }>(url);
-        const pools = response.data.official;
-
-        // Find the pool that contains the token mint
-        const pool = pools.find(p => 
-            p.baseMint === tokenMint || p.quoteMint === tokenMint
-        );
-
-        if (pool) {
-            console.log('Pool Data:', pool);
-            return pool;
-        } else {
-            console.log('No pool found for the given token mint.');
-            return null;
+      // WSOL mint address
+      const WSOL_MINT = 'So11111111111111111111111111111111111111112';
+  
+      // Fetch Raydium pool data using Helius
+      const response = await heliusConnection.getProgramAccounts(
+        new PublicKey('RAYDIUM_LIQUIDITY_POOL_PROGRAM_ID'), // Replace with the actual Raydium program ID
+        {
+          filters: [
+            {
+              memcmp: {
+                offset: 8, // Adjust based on Raydium pool account layout
+                bytes: tokenMint, // Filter by base mint (your token)
+              },
+            },
+            {
+              memcmp: {
+                offset: 40, // Adjust based on Raydium pool account layout
+                bytes: WSOL_MINT, // Filter by quote mint (WSOL)
+              },
+            },
+          ],
         }
+      );
+  
+      if (response.length === 0) {
+        console.log('No pool found for the given token mint and WSOL pair.');
+        return null;
+      }
+  
+      // Decode the pool data (adjust based on Raydium pool account layout)
+      const poolData = response[0].account.data;
+      const pool: RaydiumPool = {
+        baseMint: poolData.slice(8, 40).toString('hex'), // Adjust offsets as needed
+        quoteMint: poolData.slice(40, 72).toString('hex'), // Adjust offsets as needed
+        lpMint: poolData.slice(72, 104).toString('hex'), // Adjust offsets as needed
+        poolId: response[0].pubkey.toString(),
+      };
+  
+      console.log('Pool Data:', pool);
+      return pool;
     } catch (error) {
-        console.error('Error fetching pool data:', error);
-        throw error; // Re-throw the error for handling upstream
+      console.error('Error fetching pool data:', error);
+      throw error; // Re-throw the error for handling upstream
     }
-}
+  }
 
 
 
 async function main() {
   console.log('Starting Telegram client...');
 
-  try {
+  try {17756918701
+
     // Create the Telegram client
     const client = new TelegramClient(session, apiId, apiHash, { connectionRetries: 5 });
 
@@ -128,6 +164,7 @@ async function main() {
             const extractedCA = extractContractAddress(text);
             if (extractedCA) {
               console.log(`Extracted Contract Address (CA): ${extractedCA}`);
+              const pool = await getRaydiumPoolData(Connection, extractedCA.toString());
             } else {
               console.log('No valid contract address found in the message.');
             }

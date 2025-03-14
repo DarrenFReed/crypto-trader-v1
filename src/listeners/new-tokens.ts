@@ -219,7 +219,7 @@ export async function startMonitoring(connection: Connection, newTokenConnection
           tokenEmitter.emit('market', { marketId: poolData.marketId.toString(), data: marketData });
           tokenEmitter.emit('newToken', newTokenData);
           //await initializeTokenMetrics(connection, baseAddress, quoteAddress, poolId); 
-          startTokenMonitoring(connection, baseAddress, quoteAddress); 
+          //startTokenMonitoring(connection, baseAddress, quoteAddress); 
           startHolderTracking(connection, baseAddress); 
 
         } catch (error) {
