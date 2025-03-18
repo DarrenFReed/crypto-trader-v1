@@ -33,6 +33,8 @@ function extractContractAddress(message: string): string | null {
   return match ? match[0] : null;
 }
 
+
+
 // Create an event emitter
 export const tgMonitorEmitter = new EventEmitter();
 
@@ -92,8 +94,8 @@ export async function startTgMonitor(connection: Connection, publicChannelUserna
             // Extract the contract address using the regex
             if (extractedCA) {
               console.log(`Extracted Contract Address (CA): ${extractedCA}`);
-              //const poolKeys = await getRaydiumPoolId(connection, quoteToken, extractedCA);
-              //console.log(`Pool Keys: ${poolKeys}`);
+              const poolKeys = await getRaydiumPoolId(connection, quoteToken, extractedCA);
+              console.log(`Pool Keys: ${poolKeys}`);
             } else {
               console.log('No valid contract address found in the message.');
             }

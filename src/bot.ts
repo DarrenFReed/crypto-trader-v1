@@ -34,6 +34,8 @@ import { fetchPoolData } from './helpers/fetchPoolData';
 import { raySwapBuy, raySwapSell } from './trading/raySwap';
 import { AccountType, splAccountLayout } from '@raydium-io/raydium-sdk-v2';
 import { getPoolKeys} from './helpers/testFindingPoolID';
+import { TopHolderFilter } from './filters/top-holders';
+import { gmgcSwap } from './trading/gmgcSwap';
 
 const prisma = new PrismaClient();
 
@@ -293,11 +295,14 @@ export class Bot {
           
 //SWAP CALLED HERE
           //const lamports =  10000000
-          const lamports =  100000000
-          const swapResult = await raySwapBuy(this.connection, poolKeys.quoteMint.toString(), poolKeys.baseMint.toString(), lamports);
-          console.log("Transaction IDs:", swapResult);
+          const lamports =  200000000
+          //const swapResult = await raySwapBuy(this.connection, poolKeys.quoteMint.toString(), poolKeys.baseMint.toString(), lamports);
+          const swapResult = await gmgcSwap (this.connection, poolKeys.quoteMint.toString(), poolKeys.baseMint.toString(), lamports.toString());
           
-          if (swapResult.confirmed) {
+
+          console.log("Transaction IDs:", swapResult);
+          if (swapResult.status.success === true) {
+          //if (swapResult.confirmed) {
             await prisma.token.update({
               where: { baseAddress: poolState.baseMint.toString() },
               data: { tokenStatus: 'BOUGHT' },
@@ -482,6 +487,7 @@ export class Bot {
     let timesChecked = 0;
     let poolPassed = false;
     let trendPassed = false;
+    let priceTrendPassed = false;
 
     const marketCapFilter = new MarketCapFilter(this.connection, this.config.minMarketCap, this.config.maxMarketCap);
     const marketCapResult = await marketCapFilter.execute(poolKeys);
@@ -494,6 +500,20 @@ export class Bot {
         });
         await stopMonitoring(this.connection, poolKeys.baseMint.toString());  // ✅ Stops all monitoring immediately
         return false;
+    }
+
+    // Create an instance of TopHolderFilter and call the instance method
+    const topHolderFilter = new TopHolderFilter(this.connection, 5);
+    const initialTopHolderResult = await topHolderFilter.initialCheck(poolKeys, 5);
+  
+    if (!initialTopHolderResult.ok) {
+      logger.trace(`❌ Initial top holder check failed for ${poolKeys.baseMint}. Stopping monitoring.`);
+      await prisma.token.update({
+        where: { baseAddress: poolKeys.baseMint.toString() },
+        data: { tokenStatus: 'FAILED' },
+      });
+      await stopMonitoring(this.connection, poolKeys.baseMint.toString()); 
+      return false;
     }
 
     logger.trace(`✅ Market cap check passed, continuing with other filters.`);
@@ -512,9 +532,16 @@ export class Bot {
                 }
                 logger.trace(`✅ Pool filters passed, now checking trend filters.`);
             }
+            
+            
+            // Add the Monitor Price for entry here
+
+
+
+
 
             // ✅ Check trend filters, but don’t consume iteration if they fail
-           /*  if (!trendPassed) {
+/*           if (!trendPassed) {
               trendPassed = (await TrendFilters.evaluateToken(poolKeys.baseMint.toString())) ?? false;
               if (!trendPassed) {
                   logger.trace(`⏳ Trend filters not passing yet. Retrying... (${timesChecked + 1}/${timesToCheck})`);
@@ -523,10 +550,24 @@ export class Bot {
                   continue;
               }
               logger.trace(`✅ Trend filters passed.`);
-          } */
-
+          }  */
+ 
             // ✅ If both have passed, we exit successfully
-            if (poolPassed) {
+            
+            if (poolPassed && !priceTrendPassed) {
+              const entryResult = await this.monitorPriceForEntry(poolKeys.id, poolKeys.baseMint.toString());
+              if (entryResult === 'entry-point') {
+                  priceTrendPassed = true; // Set trendPassed to true if an entry point is detected
+                  logger.trace(`✅ Entry point detected. Proceeding to buy.`);
+              } else {
+                  logger.trace(`⏳ No entry point detected yet. Retrying... (${timesChecked + 1}/${timesToCheck})`);
+                  await sleep(this.config.filterCheckInterval);
+                  timesChecked++;
+                  continue;
+              }
+          }
+            
+            if (poolPassed && priceTrendPassed) {
                 logger.debug(
                     { mint: poolKeys.baseMint.toString() },
                     `✅ Token passed both pool & trend filters. Ready for buy.`
@@ -556,53 +597,23 @@ export class Bot {
 }
 
 
-private async priceMatchV1(
-  amountIn: TokenAmount,
+private async monitorPriceForEntry(
   poolID: PublicKey,
   baseAddress: string
-): Promise<'take-profit' | 'stop-loss' | 'timeout'> {
+): Promise<'entry-point' | 'timeout'> {
   if (this.config.priceCheckDuration === 0 || this.config.priceCheckInterval === 0) {
-    return 'take-profit'; // Skip price check if not configured
+    return 'timeout'; // Skip price check if not configured
   }
 
   const WSOL_MINT = 'So11111111111111111111111111111111111111112';
-  const LAMPORTS_PER_SOL = 1_000_000_000; 
+  const LAMPORTS_PER_SOL = 1_000_000_000;
 
-  // Fetch the last trade price from the database
-  const maxRetries = 10;
-  const delayMs = 3000; // 1 second retry delay
-  let lastTrade: { price: number } | null = null;
-
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    lastTrade = await prisma.trade.findFirst({
-      where: { tokenBaseAddress: baseAddress },
-      orderBy: { executedAt: 'desc' },
-      select: { price: true },
-    });
-
-    if (lastTrade) {
-      console.log(`✅ Trade record found in database for ${baseAddress} after ${attempt} attempt(s).`);
-      break;
-    }
-
-    console.log(`⏳ Waiting for trade record... Attempt ${attempt}/${maxRetries}`);
-    await new Promise((resolve) => setTimeout(resolve, delayMs));
-  }
-
-  if (!lastTrade) {
-    console.error("❌ No trade history found. Exiting price check.");
-    return 'timeout';
-  }
-
-  const purchasePrice = lastTrade.price; // ✅ Directly using float value
-  const takeProfitMultiplier = 1 + this.config.takeProfit / 100; // Example: 10% → 1.1
-  const stopLossMultiplier = 1 - this.config.stopLoss / 100; // Example: 10% → 0.9
-
+  let startingPrice: number | null = null;
   let timesChecked = 0;
-  let tpTriggered = false;
-  let tpTriggerCount = 0;
-  let slTriggered = false;
-  let slTriggerCount = 0;
+  let previousPrice: number | null = null;
+  let consecutiveIncreases = 0; // Track consecutive price increases
+  const requiredConsecutiveIncreases = 3; // Number of consecutive increases to confirm a trend
+  const volatilityBuffer = 0.01; // Ignore price changes less than 0.1%
 
   do {
     try {
@@ -637,69 +648,48 @@ private async priceMatchV1(
 
       // Convert reserves to human-readable amounts
       const baseReserveHuman = isWsolBase
-      ? baseReserve.toNumber() / LAMPORTS_PER_SOL // Convert lamports to SOL
-      : baseReserve.toNumber() / Math.pow(10, poolState.baseDecimal.toNumber()); // Adjust for token decimals
+        ? baseReserve.toNumber() / LAMPORTS_PER_SOL // Convert lamports to SOL
+        : baseReserve.toNumber() / Math.pow(10, poolState.baseDecimal.toNumber()); // Adjust for token decimals
 
-     const quoteReserveHuman = isWsolBase
-      ? quoteReserve.toNumber() / Math.pow(10, poolState.quoteDecimal.toNumber()) // Adjust for token decimals
-      : quoteReserve.toNumber() / LAMPORTS_PER_SOL; // Convert lamports to SOL
+      const quoteReserveHuman = isWsolBase
+        ? quoteReserve.toNumber() / Math.pow(10, poolState.quoteDecimal.toNumber()) // Adjust for token decimals
+        : quoteReserve.toNumber() / LAMPORTS_PER_SOL; // Convert lamports to SOL
 
-    // Calculate the current price based on reserves
-      const currentPrice = isWsolBase
-      ? baseReserveHuman / quoteReserveHuman // Price = SOL per token
-      : quoteReserveHuman / baseReserveHuman; // Price = SOL per token
-
-      
       // Calculate the current price based on reserves
-/*       let currentPrice: number;
-      if (isWsolBase) {
-        currentPrice = baseReserve.toNumber() / quoteReserve.toNumber();
-      } else {
-        currentPrice = quoteReserve.toNumber() / baseReserve.toNumber();
+      const currentPrice = isWsolBase
+        ? baseReserveHuman / quoteReserveHuman // Price = SOL per token
+        : quoteReserveHuman / baseReserveHuman; // Price = SOL per token
+
+      // Set the starting price if not already set
+      if (startingPrice === null) {
+        startingPrice = currentPrice;
+        console.log(`📌 Starting price set to: ${startingPrice}`);
       }
- */
-      console.log(`📈 Current Price: ${currentPrice} | Purchase Price: ${purchasePrice}`);
 
-      // Calculate price change percentage
-      const priceChange = (currentPrice / purchasePrice) - 1;
-      const profitPercent = priceChange * 100;
+      console.log(`📈 Current Price: ${currentPrice} | Starting Price: ${startingPrice}`);
 
-      console.log(`📊 Profit/Loss %: ${profitPercent.toFixed(2)}%`);
+      // Track price trends
+      if (previousPrice !== null) {
+        const priceChange = (currentPrice - previousPrice) / previousPrice; // Calculate percentage change
 
-//TAKE PROFIT      
-      // Take Profit Logic
-      if (currentPrice >= purchasePrice * takeProfitMultiplier) {
-        if (tpTriggerCount >= 2) {
-          tpTriggerCount = 0; // Reset TP trigger count
-          console.log(`✅ Take profit triggered twice. Exiting.`);
-          return 'take-profit';
+        if (priceChange > volatilityBuffer) {
+          consecutiveIncreases++; // Increment if price increases significantly
+          console.log(`🔼 Price increase detected. Consecutive increases: ${consecutiveIncreases}`);
+        } else if (priceChange < -volatilityBuffer) {
+          consecutiveIncreases = 0; // Reset if price decreases significantly
+          console.log(`🔽 Price decrease detected. Resetting consecutive increases.`);
         } else {
-          tpTriggerCount++; // Increment TP trigger count
-          console.log(`✅ Take profit triggered ${tpTriggerCount} time(s). Current: ${currentPrice}`);
+          console.log(`➖ Price change within volatility buffer. Ignoring.`);
         }
-      } else {
-        tpTriggerCount = 0; // Reset TP trigger count if price drops below TP threshold
-        console.log(`🔄 Price dropped below TP level. Resetting TP trigger count.`);
+
+        // Check for a potential entry point (consistent upward trend)
+        if (consecutiveIncreases >= requiredConsecutiveIncreases) {
+          console.log(`🚀 Entry point confirmed! Price has increased consistently.`);
+          return 'entry-point';
+        }
       }
 
-/*       if (currentPrice >= purchasePrice * takeProfitMultiplier) {
-        console.log(`✅ Take profit triggered! Sold at ${currentPrice}`);
-        return 'take-profit';
-      } */
-//STOP LOSS
-      if (currentPrice <= purchasePrice * stopLossMultiplier) {
-        if (slTriggerCount >= 2) {
-          slTriggerCount = 0; // Reset SL trigger count
-          console.log(`❌ Stop loss triggered twice. Exiting.`);
-          return 'stop-loss';
-        } else {
-          slTriggerCount++; // Increment SL trigger count
-          console.log(`❌ Stop loss triggered ${slTriggerCount} time(s). Current: ${currentPrice}`);
-        }
-      } else {
-        slTriggerCount = 0; // Reset SL trigger count if price rises above SL threshold
-        console.log(`🔄 Price dpopped below SL level. Resetting SL trigger count.`);
-      }
+      previousPrice = currentPrice; // Update previous price for the next iteration
 
       await sleep(this.config.priceCheckInterval);
     } catch (e) {
@@ -709,10 +699,9 @@ private async priceMatchV1(
     }
   } while (timesChecked < this.config.priceCheckDuration / this.config.priceCheckInterval);
 
-  console.log("⏳ Price check completed. No action triggered.");
+  console.log("⏳ Price check completed. No entry point detected.");
   return 'timeout';
 }
-
 
 
 
@@ -729,7 +718,7 @@ private async priceWatchV1WithCSL(
   const LAMPORTS_PER_SOL = 1_000_000_000;
 
   // Fetch the last trade price from the database
-  const maxRetries = 6;
+  const maxRetries = 10;
   const delayMs = 3000; // 1 second retry delay
   let lastTrade: { price: number } | null = null;
 
@@ -757,7 +746,7 @@ private async priceWatchV1WithCSL(
   const purchasePrice = lastTrade.price; // ✅ Directly using float value
   const takeProfitMultiplier = 1 + this.config.takeProfit / 100; // Example: 10% → 1.1
   const initialStopLossMultiplier = 1 - 0.35; // Initial stop loss at 30%
-  const trailingStopLossMultiplier = 1 - 0.15; // Trailing stop loss at 10%
+  const trailingStopLossMultiplier = 1 - 0.17; // Trailing stop loss at 10%
 
   let timesChecked = 0;
   let tpTriggered = false;
@@ -813,6 +802,11 @@ private async priceWatchV1WithCSL(
         ? baseReserveHuman / quoteReserveHuman // Price = SOL per token
         : quoteReserveHuman / baseReserveHuman; // Price = SOL per token
 
+
+             // Calculate TVL in SOL
+      const tvlInSOL = (baseReserveHuman * currentPrice) + (quoteReserveHuman * 1); // TVL = (Base Reserve * Base Token Price) + (Quote Reserve * 1)
+      console.log(`💰 TVL (SOL): ${tvlInSOL.toFixed(2)} SOL`); 
+
       console.log(`📈 Current Price: ${currentPrice} | Purchase Price: ${purchasePrice}`);
 
       // Calculate price change percentage
@@ -839,8 +833,8 @@ private async priceWatchV1WithCSL(
         if (!stopLossTriggered) {
           // First time stop-loss is triggered
           stopLossTriggered = true;
-          slTriggerCount = 1; // Start confirmation counter
-          console.log(`⚠️ Stop-loss condition met. Waiting for confirmation...`);
+          slTriggerCount = 2; // Start confirmation counter
+          console.log(`⚠️ Stop-loss condition met twice. Waiting for confirmation...`);
         } else {
           // Stop-loss was already triggered, increment confirmation counter
           slTriggerCount++;
@@ -869,13 +863,13 @@ private async priceWatchV1WithCSL(
 
       // Take Profit Logic
       if (currentPrice >= purchasePrice * takeProfitMultiplier) {
-        if (tpTriggerCount >= 2) {
+        tpTriggerCount++; // Increment TP trigger count
+        console.log(`✅ Take profit triggered ${tpTriggerCount} time(s). Current: ${currentPrice}`);
+      
+        if (tpTriggerCount === 2) { // Trigger action when tpTriggerCount equals 2
           tpTriggerCount = 0; // Reset TP trigger count
           console.log(`✅ Take profit triggered twice. Exiting.`);
           return 'take-profit';
-        } else {
-          tpTriggerCount++; // Increment TP trigger count
-          console.log(`✅ Take profit triggered ${tpTriggerCount} time(s). Current: ${currentPrice}`);
         }
       } else {
         tpTriggerCount = 0; // Reset TP trigger count if price drops below TP threshold

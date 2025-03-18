@@ -71,6 +71,15 @@ model Trade {
   token       Token         @relation(fields: [tokenBaseAddress], references: [baseAddress])
 }
 
+model Settings {
+
+
+
+
+  
+}
+
+
 model ActiveSubscription {
   id                Int      @id @default(autoincrement()) @map("subscription_id")
   tokenBaseAddress  String   @map("token_base_address") // 🔥 Changed from tokenId to baseAddress
