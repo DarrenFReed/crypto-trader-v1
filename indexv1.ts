@@ -10,9 +10,10 @@ import { SubscriptionManager } from './src/services/subscription-manager';
 import readline from 'readline';
 import { getWalletKeypair } from './src/helpers/wallet-utils';
 //import { runTrendUpdater } from './src/trend/trend-updater';
-import { wrapSOL } from './src/helpers/wrap-sol';
+import { wrapSOL, unwrapSOL } from './src/helpers/wrap-sol';
 import { subscribeToWalletChanges } from './src/listeners/walletMonitor';
 import { Mutex } from 'async-mutex';
+import { startEnhancedMonitoring, stopEnhancedMonitoring } from './src/listeners/new-tokenv1';
 
 
 import {
@@ -133,7 +134,9 @@ const runListener = async () => {
   
   const quoteToken = getToken(QUOTE_MINT);
   
-  //const wsolAddress = await wrapSOL(connection, wallet, 200000000);
+  //const sol = await unwrapSOL(connection, wallet);
+  
+ //const wsolAddress = await wrapSOL(connection, wallet, 300000000);
   
   await subscriptionManager.clearAllSubscriptions();
 
@@ -190,6 +193,9 @@ const runListener = async () => {
   // ✅ Start monitoring new tokens and wallet changes
   await startMonitoring(connection, newTokenConnection, txConnection, wallet.publicKey);
   //startTgMonitor(connection, '@pumpfunnevadie');
+
+  //await startEnhancedMonitoring(connection, newTokenConnection, txConnection, wallet.publicKey);
+
 
   tokenEmitter.on('market', (marketInfo) => {
     if (!marketInfo || !marketInfo.data) {

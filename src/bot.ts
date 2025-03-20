@@ -35,7 +35,7 @@ import { raySwapBuy, raySwapSell } from './trading/raySwap';
 import { AccountType, splAccountLayout } from '@raydium-io/raydium-sdk-v2';
 import { getPoolKeys} from './helpers/testFindingPoolID';
 import { TopHolderFilter } from './filters/top-holders';
-import { gmgcSwap } from './trading/gmgcSwap';
+import { gmgcBuy, gmgcSell } from './trading/gmgcSwap';
 
 const prisma = new PrismaClient();
 
@@ -239,10 +239,6 @@ export class Bot {
   } */
 
 
-
-
-
-
   public async buy(accountId: PublicKey, poolState: LiquidityStateV4) {
     logger.trace({ mint: poolState.baseMint }, `Processing new pool...`);
 
@@ -295,14 +291,24 @@ export class Bot {
           
 //SWAP CALLED HERE
           //const lamports =  10000000
-          const lamports =  200000000
+          const lamports =  100000000
           //const swapResult = await raySwapBuy(this.connection, poolKeys.quoteMint.toString(), poolKeys.baseMint.toString(), lamports);
-          const swapResult = await gmgcSwap (this.connection, poolKeys.quoteMint.toString(), poolKeys.baseMint.toString(), lamports.toString());
+          //const swapResult = await gmgcSwap (this.connection, poolKeys.quoteMint.toString(), poolKeys.baseMint.toString(), lamports.toString(), 10);
           
+          const swapResult = await gmgcBuy(
+            this.connection, 
+            poolKeys.quoteMint.toString(),  // Input (SOL)
+            poolKeys.baseMint.toString(),   // Output (token to buy)
+            lamports.toString(),            // Amount
+            10                              // 10% slippage
+          );
+  
+          logger.info({ txHash: swapResult.hash }, "Transaction sent");
 
-          console.log("Transaction IDs:", swapResult);
-          if (swapResult.status.success === true) {
-          //if (swapResult.confirmed) {
+          //console.log("Transaction IDs:", swapResult);
+          //if (swapResult.status.success === true) {
+          if (swapResult.confirmed) {
+            
             await prisma.token.update({
               where: { baseAddress: poolState.baseMint.toString() },
               data: { tokenStatus: 'BOUGHT' },
@@ -347,7 +353,7 @@ export class Bot {
       const tokenAmountIn = new TokenAmount(tokenIn, rawAccount.amount, true);
 
       if (tokenAmountIn.isZero()) {
-        logger.info({ mint: rawAccount.mint.toString() }, `Empty balance, can't sell`);
+        logger.info({ mint: rawAccount.mint.toString() }, `soldl`);
         return;
       }
 
@@ -374,9 +380,19 @@ export class Bot {
 
           const sellTokenAmount = rawAccount.amount;
 
-          const swapResult = await raySwapSell(this.connection, poolKeys.baseMint.toString(), poolKeys.quoteMint.toString(), Number(sellTokenAmount), accountId.toString());
-          console.log("Transaction IDs:", swapResult);
-          
+          //const swapResult = await raySwapSell(this.connection, poolKeys.baseMint.toString(), poolKeys.quoteMint.toString(), Number(sellTokenAmount), accountId.toString());
+          //console.log("Transaction IDs:", swapResult);
+
+
+          const swapResult = await gmgcSell(
+            this.connection,
+            poolKeys.baseMint.toString(),                    // Input (token to sell)
+            poolKeys.quoteMint.toString(),          // Output (SOL)
+            sellTokenAmount.toString(),                    // Amount (all tokens)
+            15,                              // 10% slippage
+            accountId.toString()         // Token account address
+          );
+
           if (swapResult.confirmed) {
             const subscriptionManager = SubscriptionManager.getInstance(this.connection);
             await subscriptionManager.removeSubscription(rawAccount.mint.toString());
@@ -534,12 +550,6 @@ export class Bot {
             }
             
             
-            // Add the Monitor Price for entry here
-
-
-
-
-
             // ✅ Check trend filters, but don’t consume iteration if they fail
 /*           if (!trendPassed) {
               trendPassed = (await TrendFilters.evaluateToken(poolKeys.baseMint.toString())) ?? false;
@@ -557,18 +567,21 @@ export class Bot {
             if (poolPassed && !priceTrendPassed) {
               const entryResult = await this.monitorPriceForEntry(poolKeys.id, poolKeys.baseMint.toString());
               if (entryResult === 'entry-point') {
-                  priceTrendPassed = true; // Set trendPassed to true if an entry point is detected
+                  priceTrendPassed = true; // Set trendPassed to true if an entry point is detecte
                   logger.trace(`✅ Entry point detected. Proceeding to buy.`);
               } else {
-                  logger.trace(`⏳ No entry point detected yet. Retrying... (${timesChecked + 1}/${timesToCheck})`);
-                  await sleep(this.config.filterCheckInterval);
-                  timesChecked++;
-                  continue;
+                logger.trace(`❌ Price monitoring failed or market cap fell below threshold. Stopping monitoring.`);
+                await prisma.token.update({
+                  where: { baseAddress: poolKeys.baseMint.toString() },
+                  data: { tokenStatus: 'FAILED' },
+                });
+                await stopMonitoring(this.connection, poolKeys.baseMint.toString());
+                return false; // Exit the function
               }
           }
-            
+                    
             if (poolPassed && priceTrendPassed) {
-                logger.debug(
+              logger.debug(
                     { mint: poolKeys.baseMint.toString() },
                     `✅ Token passed both pool & trend filters. Ready for buy.`
                 );
@@ -612,8 +625,9 @@ private async monitorPriceForEntry(
   let timesChecked = 0;
   let previousPrice: number | null = null;
   let consecutiveIncreases = 0; // Track consecutive price increases
-  const requiredConsecutiveIncreases = 3; // Number of consecutive increases to confirm a trend
+  const requiredConsecutiveIncreases = 2; // Number of consecutive increases to confirm a trend
   const volatilityBuffer = 0.01; // Ignore price changes less than 0.1%
+  const priceThreshold = 0.00000010;
 
   do {
     try {
@@ -667,6 +681,10 @@ private async monitorPriceForEntry(
       }
 
       console.log(`📈 Current Price: ${currentPrice} | Starting Price: ${startingPrice}`);
+
+      if (currentPrice < priceThreshold) {
+        return 'timeout';
+      }
 
       // Track price trends
       if (previousPrice !== null) {
@@ -745,8 +763,8 @@ private async priceWatchV1WithCSL(
 
   const purchasePrice = lastTrade.price; // ✅ Directly using float value
   const takeProfitMultiplier = 1 + this.config.takeProfit / 100; // Example: 10% → 1.1
-  const initialStopLossMultiplier = 1 - 0.35; // Initial stop loss at 30%
-  const trailingStopLossMultiplier = 1 - 0.17; // Trailing stop loss at 10%
+  const initialStopLossMultiplier = 1 - 0.25; // Initial stop loss at 30%
+  const trailingStopLossMultiplier = 1 - 0.15; // Trailing stop loss at 10%
 
   let timesChecked = 0;
   let tpTriggered = false;
@@ -815,6 +833,19 @@ private async priceWatchV1WithCSL(
 
       console.log(`📊 Profit/Loss %: ${profitPercent.toFixed(2)}%`);
 
+      //Break Even Stop Loss
+      let breakEvenActivated = false
+      if (!breakEvenActivated && currentPrice >= purchasePrice * 1.05) {
+        // Once we're up 5%, move stop loss to break-even
+        breakEvenActivated = true;
+        if (purchasePrice > trailingStopLossThreshold) {
+          trailingStopLossThreshold = purchasePrice;
+          console.log(`🔒 Moving stop loss to break-even at ${purchasePrice}`);
+        }
+      }
+
+
+
       // Update highest price and trailing stop loss threshold
       if (currentPrice > highestPrice) {
         highestPrice = currentPrice; // Update highest price
@@ -842,7 +873,7 @@ private async priceWatchV1WithCSL(
         }
   
         // If price remains below threshold for 2 consecutive checks, execute sell
-        if (slTriggerCount >= 2) {
+        if (slTriggerCount >= 3) {
           console.log(`🔴 Stop-loss confirmed at ${currentPrice}. Executing sell...`);
           return 'stop-loss';
         }

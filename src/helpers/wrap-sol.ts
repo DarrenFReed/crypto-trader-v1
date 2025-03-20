@@ -13,6 +13,8 @@ import {
     getAssociatedTokenAddress,
     NATIVE_MINT,
     TOKEN_PROGRAM_ID,
+    closeAccount,
+    createCloseAccountInstruction
 } from "@solana/spl-token";
 
 /**
@@ -61,4 +63,41 @@ export async function wrapSOL(
     console.log(`✅ Wrapped ${amount / 1_000_000_000} SOL into WSOL at ${wsolATA.toBase58()}`);
 
     return wsolATA;
+}
+
+
+export async function unwrapSOL(
+    connection: Connection,
+    payer: Keypair
+): Promise<number> {
+    try {
+        // Derive the WSOL Associated Token Account (ATA) for the user
+        const wsolATA = await getAssociatedTokenAddress(
+            NATIVE_MINT, // WSOL mint address
+            payer.publicKey // Owner of the ATA (user's wallet)
+        );
+
+        // Fetch the WSOL account to get the balance
+        const wsolAccount = await getAccount(connection, wsolATA);
+        const wsolBalance = wsolAccount.amount;
+
+        // Close the WSOL ATA and transfer the balance back to the owner
+        const closeAccountTx = new Transaction().add(
+            createCloseAccountInstruction(
+                wsolATA, // WSOL ATA to close
+                payer.publicKey, // SOL will be sent back to the owner
+                payer.publicKey, // Owner of the WSOL ATA
+                [] // Optional multi-signers
+            )
+        );
+
+        await sendAndConfirmTransaction(connection, closeAccountTx, [payer]);
+
+        console.log(`✅ Unwrapped ${Number(wsolBalance) / 1_000_000_000} SOL from WSOL at ${wsolATA.toBase58()}`);
+
+        return Number(wsolBalance); // Return the amount of SOL unwrapped (in lamports)
+    } catch (err) {
+        console.error("❌ Failed to unwrap SOL:", err);
+        throw err;
+    }
 }

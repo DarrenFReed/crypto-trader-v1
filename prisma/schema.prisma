@@ -14,7 +14,10 @@ model Token {
   quoteAddress  String  @map("quote_address")
   quoteDecimals Int     @map("quote_decimals")
   quoteLpAmount Float   @default(0) @map("quote_lp_amount")
+  marketId      String?  @map("market_id")
+  poolId        String? @map("poool_id")
   tokenStatus   TokenStatus @default(WAITING_FOR_POOL) @map("token_status")
+  poolFetchAttempts Int @default(0) @map("pool_fetch_attemps")
   createdAt     DateTime @default(now()) @map("created_at")
 
   metrics       TokenMetrics[]
@@ -24,6 +27,40 @@ model Token {
   transactions  Transaction[]
 
 }
+
+// Market table to store OpenBook market information
+model Market {
+  marketId     String   @id
+  baseMint     String @map("base_mint")
+  quoteMint    String @map("quote_mint")
+  createdAt    DateTime @default(now()) @map("created_at")
+  lastUpdated  DateTime @updatedAt @map("last_updated")
+  
+  // Optional indices for faster queries
+  @@index([baseMint])
+  @@index([quoteMint])
+}
+
+
+// Pool table to store Raydium liquidity pool information
+model Pool {
+  poolId        String   @id
+  baseMint      String @map("base_mint")
+  quoteMint     String @map("quote_mint")
+  marketId      String @map("market_id")
+  baseDecimals  Int @map("base_decimals")
+  quoteDecimals Int @map("quote_decimals")
+  createdAt     DateTime @default(now()) @map("created_at")
+  lastUpdated   DateTime @updatedAt @map("last_updated")
+  
+  // Optional indices for faster queries
+  @@index([baseMint])
+  @@index([quoteMint])
+  @@index([marketId])
+}
+
+
+
 
 model TokenMetrics {
   id                     Int     @id @default(autoincrement()) @map("metrics_id")
@@ -46,6 +83,9 @@ model TokenMetrics {
 
   token                  Token   @relation(fields: [tokenBaseAddress], references: [baseAddress], onDelete: Cascade)
 }
+
+
+
 
 model LiquidityPool {
   id                Int     @id @default(autoincrement()) @map("pool_id")
@@ -71,13 +111,6 @@ model Trade {
   token       Token         @relation(fields: [tokenBaseAddress], references: [baseAddress])
 }
 
-model Settings {
-
-
-
-
-  
-}
 
 
 model ActiveSubscription {
@@ -121,6 +154,7 @@ enum TokenStatus {
   SOLD
   FAILED
   ACTIVE
+  DISCOVERED
 }
 
 enum TradeStatus {
