@@ -13,7 +13,7 @@ import { getWalletKeypair } from './src/helpers/wallet-utils';
 import { wrapSOL, unwrapSOL } from './src/helpers/wrap-sol';
 import { subscribeToWalletChanges } from './src/listeners/walletMonitor';
 import { Mutex } from 'async-mutex';
-import { startEnhancedMonitoring, stopEnhancedMonitoring } from './src/listeners/new-tokenv1';
+//import { startEnhancedMonitoring, stopEnhancedMonitoring } from './src/listeners/new-tokenv1';
 
 
 import {
@@ -87,6 +87,9 @@ const txConnection = new Connection(RPC_TX_ENDPOINT, {
   commitment: COMMITMENT_LEVEL,
 });
 
+
+
+
 //initialize SubscriptionManager Singleton at Startup
 const subscriptionManager = SubscriptionManager.getInstance(connection);
 
@@ -127,7 +130,7 @@ const runListener = async () => {
       txExecutor = new DefaultTransactionExecutor(connection);
       break;
     }
-  }
+  } 
   //const wallet = getWalletKeypair();
   const wallet = getWallet(PRIVATE_KEY.trim());
   subscribeToWalletChanges(connection, wallet.publicKey);
@@ -136,7 +139,7 @@ const runListener = async () => {
   
   //const sol = await unwrapSOL(connection, wallet);
   
- //const wsolAddress = await wrapSOL(connection, wallet, 300000000);
+ const wsolAddress = await wrapSOL(connection, wallet, 300000000);
   
   await subscriptionManager.clearAllSubscriptions();
 

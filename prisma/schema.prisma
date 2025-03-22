@@ -7,6 +7,14 @@ datasource db {
   url      = "postgresql://postgres:postgress@localhost:5432/crypto-trade?schema=public"
 }
 
+model pumpToken {
+baseAddress String @id @map("base_address")
+tokenStatus String @map("token_status")
+detectedAt DateTime @map("detected_at")
+boughtAt DateTime @map("bought_at")
+}
+
+
 model Token {
   baseAddress   String  @id @map("base_address") // 🔥 Now the primary key
   baseDecimals  Int     @map("base_decimals")

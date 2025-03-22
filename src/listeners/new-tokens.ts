@@ -96,10 +96,10 @@ export async function startMonitoring(connection: Connection, newTokenConnection
               console.log(`baseAddress: , ${baseAddress}`);
             }
 
-            if (!baseAddress.endsWith('pump')) {
-              console.log(`❌ Ignoring non-Pump.fun token: ${baseAddress}`);
-              return;
-            }
+            //if (!baseAddress.endsWith('pump')) {
+            //  console.log(`❌ Ignoring non-Pump.fun token: ${baseAddress}`);
+            //return;
+            //}
 
             const quoteInfo = postTokenBalances?.find(
               (balance) =>

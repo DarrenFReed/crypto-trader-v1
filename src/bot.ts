@@ -291,7 +291,7 @@ export class Bot {
           
 //SWAP CALLED HERE
           //const lamports =  10000000
-          const lamports =  100000000
+          const lamports =  1000000
           //const swapResult = await raySwapBuy(this.connection, poolKeys.quoteMint.toString(), poolKeys.baseMint.toString(), lamports);
           //const swapResult = await gmgcSwap (this.connection, poolKeys.quoteMint.toString(), poolKeys.baseMint.toString(), lamports.toString(), 10);
           
