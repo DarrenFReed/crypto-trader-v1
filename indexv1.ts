@@ -139,7 +139,7 @@ const runListener = async () => {
   
   //const sol = await unwrapSOL(connection, wallet);
   
- const wsolAddress = await wrapSOL(connection, wallet, 300000000);
+ const wsolAddress = await wrapSOL(connection, wallet, 100000000);
   
   await subscriptionManager.clearAllSubscriptions();
 

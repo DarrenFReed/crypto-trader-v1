@@ -1,0 +1,537 @@
+import { Connection, PublicKey } from "@solana/web3.js";
+import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import BN from "bn.js"; // Make sure to install this package
+import * as splToken from '@solana/spl-token';
+import { fetchAllUseAuthorityRecord } from "@metaplex-foundation/mpl-token-metadata";
+
+
+// Default profit/loss thresholds for auto-selling
+const priceIncreaseCount = 0// Sell at 30% profit
+const DEFAULT_MAX_HOLD_TIME = 180000; // 
+
+// Track active monitoring instances
+
+// Struct layout for bonding curve data (based on the provided Python example)
+async function fetchBondingCurveData(connection: Connection, bondingCurveAddress: PublicKey) {
+  try {
+    const accountInfo = await connection.getAccountInfo(bondingCurveAddress);
+    
+    if (!accountInfo) {
+      console.error("Bonding curve account not found");
+      return null;
+    }
+    
+    // Manual parsing based on the Python struct definition
+    // Each field is Int64ul (8 bytes)
+    const dataBuffer = accountInfo.data;
+    
+    // JavaScript doesn't have native 64-bit integers, so we use BN.js
+    const virtualTokenReserves = new BN(dataBuffer.slice(0, 8), 'le');
+    const virtualSolReserves = new BN(dataBuffer.slice(8, 16), 'le');
+    const realTokenReserves = new BN(dataBuffer.slice(16, 24), 'le');
+    const realSolReserves = new BN(dataBuffer.slice(24, 32), 'le');
+    const tokenTotalSupply = new BN(dataBuffer.slice(32, 40), 'le');
+    
+    return {
+      virtualTokenReserves,
+      virtualSolReserves,
+      realTokenReserves,
+      realSolReserves,
+      tokenTotalSupply
+    };
+  } catch (error) {
+    console.error(`Error fetching bonding curve data: ${error}`);
+    return null;
+  }
+}
+
+// Calculate token price using the formula that matches Photon's display
+function calculateTokenPrice(connection: Connection, bondingCurveData) {
+    const { virtualTokenReserves, virtualSolReserves, realTokenReserves } = bondingCurveData;
+    
+    // Convert BN to string and then to number for easier calculation
+    const vSolReserves = Number(virtualSolReserves.toString());
+    const rTokenReserves = Number(realTokenReserves.toString());
+    
+    // Calculate SOL (in lamports) per token
+    const tokenPriceInLamports = rTokenReserves / vSolReserves;
+    const tokenPriceInSol = tokenPriceInLamports / 1e9;
+    const tokenPrice = tokenPriceInSol  * 1e6;
+
+
+    return tokenPrice;
+  }
+
+// Function to get unique wallet owners of a token
+async function getUniqueWalletOwners(connection: Connection, mintAddress) {
+  try {
+    // Get largest token accounts for this mint (this gives us accounts with balances)
+    const tokenAccounts = await connection.getTokenLargestAccounts(mintAddress);
+    
+    // Filter accounts with non-zero balance
+    const accountsWithBalance = tokenAccounts.value.filter(account => 
+      account.amount !== '0' && 
+      account.uiAmount > 0
+    );
+    
+    // Prepare for counting statistics
+    let totalHolders = accountsWithBalance.length;
+    let totalTokensHeld = accountsWithBalance.reduce((sum, acc) => 
+      sum + acc.uiAmount, 0
+    );
+    
+    // If no accounts with balance, return early
+    if (totalHolders === 0) {
+      return {
+        uniqueOwners: new Set(),
+        uniqueOwnerCount: 0,
+        totalHolders: 0,
+        totalTokensHeld: 0
+      };
+    }
+    
+    // Get all accounts in a single batch request
+    const accountAddresses = accountsWithBalance.map(acc => acc.address);
+    const accountInfos = await connection.getMultipleAccountsInfo(accountAddresses);
+    
+    // Set to store unique owners
+    const uniqueOwners = new Set();
+    
+    // Process each account to extract its owner
+    for (let i = 0; i < accountInfos.length; i++) {
+      const accountInfo = accountInfos[i];
+      
+      if (accountInfo && accountInfo.data) {
+        // Parse the token account data to extract the owner
+        // The owner is stored at byte offset 32 (after the mint) and is 32 bytes long
+        const ownerPublicKey = new PublicKey(accountInfo.data.slice(32, 64));
+        uniqueOwners.add(ownerPublicKey.toString());
+      }
+    }
+    
+    return {
+      uniqueOwners: uniqueOwners,
+      uniqueOwnerCount: uniqueOwners.size,
+      totalHolders,
+      totalTokensHeld
+    };
+  } catch (error) {
+    console.error(`Error fetching unique wallet owners: ${error}`);
+    return {
+      uniqueOwners: new Set(),
+      uniqueOwnerCount: 0,
+      totalHolders: 0,
+      totalTokensHeld: 0
+    };
+  }
+}
+
+
+// Format the price in a human-readable format
+
+
+// Export monitoring function that can be called from outside
+
+// The original monitorBondingCurvePrice function (keeping for reference)
+export async function monitorBCPriceForEntry(
+    connection: Connection,
+    mintAddress: PublicKey,
+    bondingCurveAddress: PublicKey,
+    options = {
+        immediateEntry: false, 
+        minPriceIncreasePercent: 15.0,       // Minimum percentage increase to trigger immediate entry
+        minCumulativeIncrease: 10.0,         // Alternative: Total increase over X periods
+        totalPeriodsToCheck: 6,             // Number of periods to calculate cumulative increase
+        minTotalChangePercent: -100.0,        // Minimum total percentage change from initial price
+                  // Whether to enter immediately on significant increase
+        monitoringTimeout: 1 * 60 * 1000,    // 3 minute timeout
+        requireMultipleIncreases: false,     // Whether to require multiple cumulative increases
+        requiredIncreaseCount: 2,            // Number of times the cumulative threshold should be reached
+        consecutiveIncreaseThreshold: 0.1,   // Minimum percentage for consecutive price increases to count
+        useAccelerationEntry: true,         // Whether to use acceleration for entry detection
+        accelerationThreshold: 0.5,          // Minimum acceleration value to consider significant
+        requiredAccelerationCount: 3         // Number of consecutive periods with significant acceleration
+    }) {
+
+  console.log("Starting trend-following entry monitor...");
+  console.log(`Monitoring bonding curve at address: ${bondingCurveAddress.toString()}`);
+  console.log(`Token mint address: ${mintAddress.toString()}`);
+  
+  if (options.immediateEntry) {
+    console.log(`Entry criteria: Immediate entry on >${options.minPriceIncreasePercent}% jump`);
+  } else if (options.requireMultipleIncreases) {
+    console.log(`Entry criteria: >${options.minCumulativeIncrease}% cumulative increase over ${options.totalPeriodsToCheck} periods`);
+    console.log(`                Plus ${options.requiredIncreaseCount} consecutive price jumps of >${options.consecutiveIncreaseThreshold}%`);
+  } else if (options.useAccelerationEntry) {
+    console.log(`Entry criteria: ${options.requiredAccelerationCount} consecutive periods with price acceleration >${options.accelerationThreshold}%`);
+  } else {
+    console.log(`Entry criteria: >${options.minCumulativeIncrease}% cumulative increase over ${options.totalPeriodsToCheck} periods`);
+  }
+  
+  // First fetch to make sure the bonding curve exists
+  const initialData = await fetchBondingCurveData(connection, bondingCurveAddress);
+  if (!initialData) {
+    console.error("❌ Could not fetch initial bonding curve data. Please check the address and try again.");
+    return null;
+  }
+  
+  // Return a promise that resolves when entry conditions are met
+  return new Promise(async (resolve) => {
+    // Store the initial price to calculate long term change
+    let initialPrice = 0;
+    let lastPrice = 0;
+    
+    // Store recent prices to calculate cumulative change
+    let recentPrices = [];
+    
+    // For tracking multiple increases
+    let significantIncreaseCount = 0;
+    let previousCumulativeChange = 0;
+    
+    // For tracking price acceleration
+    let recentVelocities = [];
+    let significantAccelerationCount = 0;
+    
+    // Set interval to run every second
+    const intervalId = setInterval(async () => {
+      try {
+        // Get bonding curve data
+        const bondingCurveData = await fetchBondingCurveData(connection, bondingCurveAddress);
+        
+        if (!bondingCurveData) {
+          console.log("❌ Could not fetch bonding curve data");
+          return;
+        }
+        
+        const tokenPrice = calculateTokenPrice(connection, bondingCurveData);
+        
+        // Set initial price if it's the first run
+        if (initialPrice === 0) {
+          initialPrice = tokenPrice;
+          lastPrice = tokenPrice;
+          console.log(`📊 Initial price set to: ${formatPrice(initialPrice)} SOL per token`);
+          return; // Skip the first iteration after setting initial price
+        }
+        
+        // Store the current price for cumulative calculations
+        recentPrices.push(tokenPrice);
+        if (recentPrices.length > options.totalPeriodsToCheck) {
+          recentPrices.shift(); // Remove oldest price to maintain fixed window
+        }
+        
+        // Calculate price movement (current vs. last check)
+        let priceMovement = "NEUTRAL";
+        let priceChangePercent = 0;
+        
+        if (lastPrice > 0) {
+          priceChangePercent = ((tokenPrice - lastPrice) / lastPrice) * 100;
+          
+          if (priceChangePercent > 0) {
+            priceMovement = "UP";
+          } else if (priceChangePercent < 0) {
+            priceMovement = "DOWN";
+          } else {
+            priceMovement = "NEUTRAL";
+          }
+          
+          // Store current velocity (price change) for acceleration calculation
+          recentVelocities.push(priceChangePercent);
+          // Keep only the recent velocities for calculation
+          if (recentVelocities.length > 5) {
+            recentVelocities.shift();
+          }
+          
+          // Calculate acceleration (change in velocity)
+          let acceleration = 0;
+          if (recentVelocities.length >= 2) {
+            const currentVelocity = recentVelocities[recentVelocities.length - 1];
+            const previousVelocity = recentVelocities[recentVelocities.length - 2];
+            acceleration = currentVelocity - previousVelocity;
+            
+            // Track consecutive periods with significant acceleration
+            if (acceleration >= options.accelerationThreshold) {
+              significantAccelerationCount++;
+              if (options.useAccelerationEntry) {
+                console.log(`\n🚀 Significant price acceleration detected! (${significantAccelerationCount}/${options.requiredAccelerationCount} required)`);
+                console.log(`   Acceleration: ${acceleration.toFixed(2)}% (threshold: ${options.accelerationThreshold}%)`);
+              }
+            } else {
+              // Reset counter if acceleration falls below threshold
+              if (significantAccelerationCount > 0) {
+                console.log(`\n📉 Price acceleration decreased. Resetting acceleration counter from ${significantAccelerationCount} to 0`);
+                significantAccelerationCount = 0;
+              }
+            }
+          }
+          
+          // Reset consecutive increases counter ONLY if price decreases (not on neutral)
+          if ((priceChangePercent < 0) && options.requireMultipleIncreases && significantIncreaseCount > 0) {
+            console.log(`\n📉 Price decreased. Resetting consecutive increase counter from ${significantIncreaseCount} to 0`);
+            significantIncreaseCount = 0;
+          }
+        }
+        
+        // Calculate cumulative price change over recent periods
+        let cumulativeChangePercent = 0;
+        if (recentPrices.length >= 2) {
+          const oldestPrice = recentPrices[0];
+          const newestPrice = recentPrices[recentPrices.length - 1];
+          cumulativeChangePercent = ((newestPrice - oldestPrice) / oldestPrice) * 100;
+        }
+        
+        // Update previous cumulative change for next iteration
+        previousCumulativeChange = cumulativeChangePercent;
+        
+        // Calculate long-term price change percentage from initial price
+        let longTermChangePercent = ((tokenPrice - initialPrice) / initialPrice) * 100;
+        
+        // Update last price for next iteration
+        lastPrice = tokenPrice;
+        
+        // Console log status with movement indicator
+        console.log("\n=== BONDING CURVE STATUS ===");
+        console.log(`Time: ${new Date().toISOString()}`);
+        console.log(`\nToken Price: ${formatPrice(tokenPrice)} SOL per token (${tokenPrice.toExponential(7)})`);
+        
+        // Add price movement indicators with colors
+        const movementIcon = priceMovement === "UP" ? "🟢 ↑" : 
+                             priceMovement === "DOWN" ? "🔴 ↓" : "⚪ →";
+        console.log(`Current movement: ${movementIcon} ${priceMovement} (${priceChangePercent.toFixed(2)}%)`);
+        console.log(`Cumulative ${recentPrices.length}-period change: ${cumulativeChangePercent.toFixed(2)}%`);
+        console.log(`Change from initial price: ${longTermChangePercent.toFixed(2)}%`);
+        
+        // Log acceleration information if we have enough data
+        if (recentVelocities.length >= 2) {
+          const currentVelocity = recentVelocities[recentVelocities.length - 1];
+          const previousVelocity = recentVelocities[recentVelocities.length - 2];
+          const acceleration = currentVelocity - previousVelocity;
+          
+          const accelIcon = acceleration > 0 ? "🚀" : 
+                           acceleration < 0 ? "🔻" : "⏸️";
+          console.log(`Price acceleration: ${accelIcon} ${acceleration.toFixed(2)}%/period`);
+        }
+        
+        // Check entry conditions on every pass
+        const longTermChangeCondition = longTermChangePercent >= options.minTotalChangePercent;
+        
+        // Different entry conditions based on strategy
+        let entryCondition = false;
+        let entryReason = "";
+        
+        // Check for significant cumulative increase
+        const cumulativeConditionMet = cumulativeChangePercent >= options.minCumulativeIncrease && 
+                                      recentPrices.length >= options.totalPeriodsToCheck;
+        
+        // Track multiple increases if that option is enabled
+        if (options.requireMultipleIncreases && cumulativeConditionMet) {
+          // Only count increases that exceed the consecutive threshold
+          if (priceChangePercent >= options.consecutiveIncreaseThreshold) {
+            significantIncreaseCount++;
+            console.log(`\n📈 Significant price increase detected! (${significantIncreaseCount}/${options.requiredIncreaseCount} required)`);
+            console.log(`   Current increase: ${priceChangePercent.toFixed(2)}% (threshold: ${options.consecutiveIncreaseThreshold}%)`);
+          }
+        }
+        
+        if (options.immediateEntry) {
+          // Immediate entry on significant price increase
+          entryCondition = priceChangePercent >= options.minPriceIncreasePercent;
+          entryReason = "significant_immediate_increase";
+        } else if (options.useAccelerationEntry) {
+          // Entry based on consecutive periods of significant acceleration
+          entryCondition = significantAccelerationCount >= options.requiredAccelerationCount;
+          entryReason = "significant_price_acceleration";
+        } else if (options.requireMultipleIncreases) {
+          // Entry based on multiple cumulative increases over time
+          entryCondition = significantIncreaseCount >= options.requiredIncreaseCount;
+          entryReason = "multiple_cumulative_increases";
+        } else {
+          // Entry based on a single cumulative increase over multiple periods
+          entryCondition = cumulativeConditionMet;
+          entryReason = "cumulative_increase";
+        }
+        
+        // Final entry condition must also meet the long term change threshold
+        if (entryCondition && longTermChangeCondition) {
+          console.log("\n🚨 ENTRY POINT DETECTED 🚨");
+          console.log("Conditions met:");
+          
+          if (entryReason === "significant_immediate_increase") {
+            console.log(`✅ Immediate price increase of ${priceChangePercent.toFixed(2)}% (threshold: ${options.minPriceIncreasePercent}%)`);
+          } else if (entryReason === "significant_price_acceleration") {
+            console.log(`✅ Detected ${significantAccelerationCount} consecutive periods of significant price acceleration`);
+            console.log(`✅ Each acceleration above: ${options.accelerationThreshold}% (increasing momentum)`);
+          } else if (entryReason === "multiple_cumulative_increases") {
+            console.log(`✅ Detected ${significantIncreaseCount} significant price increases (threshold: ${options.requiredIncreaseCount})`);
+            console.log(`✅ Each increase: >${options.consecutiveIncreaseThreshold}% (with cumulative increase >${options.minCumulativeIncrease}%)`);
+          } else {
+            console.log(`✅ Cumulative price increase of ${cumulativeChangePercent.toFixed(2)}% over ${recentPrices.length} periods (threshold: ${options.minCumulativeIncrease}%)`);
+          }
+          
+          console.log(`✅ Total price increase from initial: ${longTermChangePercent.toFixed(2)}%`);
+          console.log(`Recommended entry price: ${formatPrice(tokenPrice)} SOL per token`);
+          
+          // Clear the interval
+          clearInterval(intervalId);
+          
+          // Resolve the promise with the entry data
+          resolve({
+            entryFound: true,
+            tokenPrice,
+            priceChangePercent,
+            cumulativeChangePercent,
+            longTermChangePercent,
+            entryReason,
+            accelerationInfo: recentVelocities.length >= 2 ? 
+                        recentVelocities[recentVelocities.length - 1] - recentVelocities[recentVelocities.length - 2] : 0,
+            significantAccelerationCount,
+            recentPrices, // Include the price history that led to this decision
+            timestamp: new Date().toISOString()
+          });
+        } else {
+          console.log("\n⏳ Waiting for entry conditions:");
+          
+          if (options.immediateEntry) {
+            console.log(`${priceChangePercent >= options.minPriceIncreasePercent ? '✅' : '❌'} Immediate price increase >${options.minPriceIncreasePercent}% (current: ${priceChangePercent.toFixed(2)}%)`);
+          } else if (options.useAccelerationEntry) {
+            // For acceleration-based entry
+            const hasAccelerationData = recentVelocities.length >= 2;
+            console.log(`${hasAccelerationData ? '✅' : '❌'} Have enough data to calculate acceleration`);
+            if (hasAccelerationData) {
+              const currentAccel = recentVelocities[recentVelocities.length - 1] - recentVelocities[recentVelocities.length - 2];
+              console.log(`${currentAccel >= options.accelerationThreshold ? '✅' : '❌'} Current acceleration: ${currentAccel.toFixed(2)}% (threshold: ${options.accelerationThreshold}%)`);
+              console.log(`${significantAccelerationCount}/${options.requiredAccelerationCount} significant acceleration periods detected`);
+            }
+          } else if (options.requireMultipleIncreases) {
+            console.log(`${recentPrices.length >= options.totalPeriodsToCheck ? '✅' : '❌'} Have ${recentPrices.length}/${options.totalPeriodsToCheck} periods of price data`);
+            console.log(`${significantIncreaseCount}/${options.requiredIncreaseCount} significant increases detected`);
+            if (recentPrices.length >= options.totalPeriodsToCheck) {
+              console.log(`${cumulativeChangePercent >= options.minCumulativeIncrease ? '✅' : '❌'} Current cumulative increase: ${cumulativeChangePercent.toFixed(2)}% (threshold: ${options.minCumulativeIncrease}%)`);
+            }
+          } else {
+            console.log(`${recentPrices.length >= options.totalPeriodsToCheck ? '✅' : '❌'} Have ${recentPrices.length}/${options.totalPeriodsToCheck} periods of price data`);
+            if (recentPrices.length >= options.totalPeriodsToCheck) {
+              console.log(`${cumulativeChangePercent >= options.minCumulativeIncrease ? '✅' : '❌'} Cumulative increase >${options.minCumulativeIncrease}% (current: ${cumulativeChangePercent.toFixed(2)}%)`);
+            }
+          }
+          
+          console.log(`${longTermChangeCondition ? '✅' : '❌'} Total price change >${options.minTotalChangePercent}% (currently ${longTermChangePercent.toFixed(2)}%)`);
+        }
+        
+      } catch (error) {
+        console.error(`Error in monitoring: ${error}`);
+      }
+    }, 2000);
+    
+    // Add a timeout to stop monitoring after a certain period
+    setTimeout(() => {
+      clearInterval(intervalId);
+      resolve({ entryFound: false, reason: "Timeout reached" });
+    }, options.monitoringTimeout); 
+  });
+}
+
+export async function monitorBCPriceForExit(
+    connection: Connection,
+    mintAddress: PublicKey,
+    bondingCurveAddress: PublicKey,
+    buyPrice: number,
+    takeProfitPercent: number = 15, // Default 15% profit target
+    stopLossPercent: number =.5,    // Default 5% loss limit
+    maxMonitorTime: number = 120000 // Default 1 hour (60 minutes)
+): Promise<string> {
+  console.log("Starting exit price monitor...");
+  console.log(`Monitoring bonding curve at address: ${bondingCurveAddress.toString()}`);
+  console.log(`Token mint address: ${mintAddress.toString()}`);
+  console.log(`Buy price: ${formatPrice(buyPrice)} SOL per token`);
+  console.log(`Take profit target: +${takeProfitPercent}%`);
+  console.log(`Stop loss limit: -${stopLossPercent}%`);
+  console.log(`Max monitor time: ${maxMonitorTime/60000} minutes`);
+  
+  // Calculate the actual price targets
+  const takeProfitPrice = buyPrice * (1 + (takeProfitPercent / 100));
+  const stopLossPrice = buyPrice * (1 - (stopLossPercent / 100));
+  
+  console.log(`Take profit price: ${formatPrice(takeProfitPrice)} SOL per token`);
+  console.log(`Stop loss price: ${formatPrice(stopLossPrice)} SOL per token`);
+  
+  // First fetch to make sure the bonding curve exists
+  const initialData = await fetchBondingCurveData(connection, bondingCurveAddress);
+  if (!initialData) {
+    console.error("❌ Could not fetch initial bonding curve data. Please check the address and try again.");
+    return "error";
+  }
+  
+  // Create a wrapper function using a Promise to properly handle async resolution
+  const monitorPromise = () => {
+    return new Promise<string>((resolve) => {
+      let intervalId: NodeJS.Timeout | null = null;
+      let timeoutId: NodeJS.Timeout | null = null;
+      
+      // Function to clean up timers
+      const cleanup = () => {
+        if (intervalId) clearInterval(intervalId);
+        if (timeoutId) clearTimeout(timeoutId);
+      };
+      
+      // Set up the interval for price checking
+      intervalId = setInterval(async () => {
+        try {
+          // Get bonding curve data
+          const bondingCurveData = await fetchBondingCurveData(connection, bondingCurveAddress);
+          
+          if (!bondingCurveData) {
+            console.log("❌ Could not fetch bonding curve data");
+            return; // Continue monitoring
+          }
+          
+          // Use correct price calculation formula
+          const tokenPrice = calculateTokenPrice(connection, bondingCurveData, false); // Get raw price
+          
+          // Calculate profit/loss percentage
+          const profitPercent = ((tokenPrice / buyPrice) - 1) * 100;
+               
+          // Check if we've hit take profit or stop loss targets
+          if (tokenPrice >= takeProfitPrice) {
+            console.log(`\n🎯 TAKE PROFIT TARGET REACHED! Current price: ${formatPrice(tokenPrice)} SOL`);
+            console.log(`Profit: +${profitPercent.toFixed(2)}%`);
+            cleanup();
+            resolve("sell token");
+            return;
+          }
+          
+          if (tokenPrice <= stopLossPrice) {
+            console.log(`\n🛑 STOP LOSS TRIGGERED! Current price: ${formatPrice(tokenPrice)} SOL`);
+            console.log(`Loss: ${profitPercent.toFixed(2)}%`);
+            cleanup();
+            resolve("sell token");
+            return;
+          }
+          
+          // Regular status update
+          console.log(`Current price: ${formatPrice(tokenPrice)} SOL | Profit/Loss: ${profitPercent.toFixed(2)}%`);
+           
+        } catch (error) {
+          console.error(`Error in monitoring: ${error}`);
+        }
+      }, 1500);
+      
+      // Set a timeout to resolve the promise if max monitor time is reached
+      timeoutId = setTimeout(() => {
+        console.log(`\n⏰ Max monitoring time (${maxMonitorTime/60000} minutes) reached without hitting targets`);
+        cleanup();
+        resolve("timeout");
+      }, maxMonitorTime);
+    });
+  };
+  
+  // Execute the monitoring promise and return its result
+  return await monitorPromise();
+}
+
+// Helper function to format price with appropriate decimal places
+function formatPrice(price: number): string {
+  if (price < 0.000001) return price.toExponential(7);
+  if (price < 0.001) return price.toFixed(9);
+  if (price < 1) return price.toFixed(6);
+  return price.toFixed(4);
+}

@@ -4,7 +4,19 @@ GRE82dsMmescpTtDaiXaWcDhvsQJHwi3zrDoxUXHojFJ
 
       
       
-      
+Pump.fun Transaction Data Structure
+When a Pump.fun "Buy" transaction occurs, the program emits a data structure with the following fields:
+
+Timestamp (8 bytes) - Unix timestamp when the transaction was created
+User Address (32 bytes) - Public key of the user who made the transaction
+Token/Mint Address (32 bytes) - Public key of the token being bought/sold
+SOL Amount (8 bytes) - Amount of SOL used in the transaction (located at offset 40)
+Token Amount (8 bytes) - Amount of tokens transferred (located at offset 48)
+Transaction Type Flag (1 byte) - Boolean indicating if it's a buy (1) or sell (0)
+Virtual SOL Reserves (8 bytes) - The virtual SOL reserves in the bonding curve
+Virtual Token Reserves (8 bytes) - The virtual token reserves in the bonding curve
+
+The data is encoded in little-endian format, meaning the least significant byte comes first.      
       
       
       

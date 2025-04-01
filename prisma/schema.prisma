@@ -12,6 +12,11 @@ baseAddress String @id @map("base_address")
 tokenStatus String @map("token_status")
 detectedAt DateTime @map("detected_at")
 boughtAt DateTime @map("bought_at")
+buyPrice Float @map("buy_price")
+buyTxHash String @map("buy_tx_hash")
+sellPrice Float? @map("sell_price")
+sellTxHash String? @map("sell_tx_hash")
+profit Float? 
 }
 
 

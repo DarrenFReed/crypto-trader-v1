@@ -146,39 +146,37 @@ export async function gmgcSwap(
         // If the transaction is successful, update DB and exit the loop
         if (status.data.success === true) {
           console.log('✅ Transaction confirmed successful!');
-          confirmed = true; 
-          if (bondingCurveAddress) {
-            try {
-              // For Pump.fun tokens, fetch and parse transaction data
-              transactionDetails = await fetchAndParsePumpFunTransaction(connection, txHash);
-              result.tokenDetails = transactionDetails;
-              result.confirmed = true;
-              console.log('Pump.fun transaction details:', transactionDetails);
-            } catch (pumpError) {
-              console.error('Error processing Pump.fun transaction:', pumpError);
-            }
-          } else {
-            try {
-              // Fetch transaction details for database record
-              transactionDetails = await fetchTransactionDetails(
-                connection, 
-                txHash, 
-                inputToken, 
-                outputToken,
-              );
-              
-              console.log('Transaction details fetched:', { 
-                tokenAmount: transactionDetails.tokenAmount, 
-                wsolAmount: transactionDetails.wsolAmount, 
-                price: transactionDetails.price, 
-                type: swapType 
-              });
-              result.tokenDetails = transactionDetails;
-              result.confirmed = true;
+          confirmed = true;
+          
+          try {
+            // Fetch transaction details for database record
+            transactionDetails = await fetchTransactionDetails(
+              connection, 
+              txHash, 
+              inputToken, 
+              outputToken,
+              bondingCurveAddress,
+            );
+            
+            console.log('Transaction details fetched:', { 
+              tokenAmount: transactionDetails.tokenAmount, 
+              wsolAmount: transactionDetails.wsolAmount, 
+              price: transactionDetails.price, 
+              type: swapType 
+            });
+            result.tokenDetails = transactionDetails;
+            result.confirmed = true;
+            // Determine which token is the "base token" for database records based on the swap type
+            const baseTokenAddress = swapType === 'BUY' ? outputToken : inputToken;
+                 
+            // Write trade data to database
+            if (bondingCurveAddress) {
+              console.log(`ℹ️ Bonding curve address provided, skipping database write from gmgcSwap function`);
+            } else {
               // Determine which token is the "base token" for database records based on the swap type
               const baseTokenAddress = swapType === 'BUY' ? outputToken : inputToken;
-                  
-                // Write trade data to database
+              
+              // Write trade data to database
               await prisma.$transaction([
                 prisma.trade.create({
                   data: {
@@ -199,15 +197,17 @@ export async function gmgcSwap(
               ]);
               
               console.log(`✅ ${swapType} trade record created in database`);
-            } catch (detailsError) {
-              console.error('Error processing transaction details:', detailsError);
-              // Continue with confirmed=true even if details fetch fails
             }
+            
+            console.log(`✅ ${swapType} trade record created in database`);
+          } catch (detailsError) {
+            console.error('Error processing transaction details:', detailsError);
+            // Continue with confirmed=true even if details fetch fails
           }
           
           break;
         }
-      
+        
         // If the transaction is expired, exit the loop
         if (status.data.expired === true) {
           console.log('❌ Transaction expired');
@@ -240,7 +240,8 @@ async function fetchTransactionDetails(
   connection: Connection,
   txId: string,
   inputMint: string,
-  outputMint: string
+  outputMint: string,
+  bondingCurveAddress?: string
 ): Promise<{ tokenAmount: number; wsolAmount: number; price: number }> {
   const config = {
     commitment: 'confirmed',
@@ -272,6 +273,10 @@ async function fetchTransactionDetails(
     'srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX',  // Serum
     // Add more DEX accounts as needed
   ];
+
+  if (bondingCurveAddress) {
+      dexAccounts.push(bondingCurveAddress);
+  }
   
   const preTokenBalances = transactionDetails.meta.preTokenBalances || [];
   const postTokenBalances = transactionDetails.meta.postTokenBalances || [];
@@ -280,6 +285,8 @@ async function fetchTransactionDetails(
   let dexAccount = null;
   let tokenChange = null;
   let wsolChange = null;
+
+  let allFoundTokenChanges = [];
   
   for (const account of dexAccounts) {
     // Filter balances to find ones involving this DEX account
@@ -306,15 +313,38 @@ async function fetchTransactionDetails(
     const foundTokenChange = changes.find(c => c.mint === tokenMint);
     const foundWsolChange = changes.find(c => c.mint === NATIVE_MINT.toBase58());
     
+    if (foundTokenChange) {
+      allFoundTokenChanges.push(foundTokenChange);
+    }
+
     // If we found both, use this DEX account
     if (foundTokenChange && foundWsolChange) {
       dexAccount = account;
       tokenChange = foundTokenChange;
       wsolChange = foundWsolChange;
       break;
-    }
+    } 
   }
   
+  if (allFoundTokenChanges.length > 0 && !wsolChange) {
+    console.warn('Could not determine WSOL changes, using QUOTE_AMOUNT as fallback');
+    const bestTokenChange = allFoundTokenChanges[0];
+    // Try to get the quote amount from environment variable
+    const quoteAmount = process.env.QUOTE_AMOUNT ? 
+      parseFloat(process.env.QUOTE_AMOUNT) * 1e9  : // Convert lamports to SOL
+      null;
+    
+    if (quoteAmount && Math.abs(bestTokenChange.change) > 0) {
+      const priceInLamports = quoteAmount / Math.abs(bestTokenChange.change)
+      const solPrice = priceInLamports / 1e9;
+      return {
+        tokenAmount: bestTokenChange.change,
+        wsolAmount: -quoteAmount, // Negative because we're spending SOL
+        price: solPrice,
+      };
+    }
+  }
+
   // If we didn't find through DEX accounts, try to look at wallet changes
   if (!tokenChange || !wsolChange) {
     // Look at our own wallet's balance changes
@@ -346,6 +376,7 @@ async function fetchTransactionDetails(
     tokenChange = changes.find(c => c.mint === tokenMint);
     wsolChange = changes.find(c => c.mint === NATIVE_MINT.toBase58());
   }
+
   
   if (!tokenChange || !wsolChange) {
     // If still not found, use fallback values to avoid breaking the flow
@@ -367,131 +398,6 @@ async function fetchTransactionDetails(
   };
 }
 
-
-/**
- * Accurately fetch and parse a Pump.fun transaction for both buy and sell transactions
- */
-async function fetchAndParsePumpFunTransaction(
-  connection: Connection,
-  txId: string
-): Promise<{ tokenAmount: number; wsolAmount: number; price: number; isBuy: boolean }> {
-  const config = {
-    commitment: 'confirmed',
-    maxSupportedTransactionVersion: 0,
-  };
-
-  // Fetch the full transaction
-  const transactionDetails = await connection.getTransaction(txId, config);
-  if (!transactionDetails) {
-    throw new Error('Transaction details not found.');
-  }
-
-  // First attempt: Look for structured event data in the CPI log
-  const logMessages = transactionDetails.meta.logMessages || [];
-  
-  // Try to find the structured event data
-  let eventData = null;
-  for (const log of logMessages) {
-    if (log.includes('Events:') && log.includes('tokenAmount') && log.includes('solAmount')) {
-      try {
-        // Extract the JSON part if possible
-        const eventMatch = log.match(/Events:\s*({.*})/);
-        if (eventMatch && eventMatch[1]) {
-          eventData = JSON.parse(eventMatch[1]);
-          break;
-        }
-      } catch (e) {
-        console.error('Error parsing event data:', e);
-      }
-    }
-  }
-
-  // If structured event data was found, use it
-  if (eventData && eventData.tokenAmount && eventData.solAmount) {
-    const solAmount = Number(eventData.solAmount) / 1e9; // Convert lamports to SOL
-    const tokenAmount = Number(eventData.tokenAmount) / 1e6; // Assuming 6 decimals
-    const isBuy = Boolean(eventData.isBuy);
-    
-    // Calculate price as SOL per token
-    const price = solAmount / tokenAmount;
-    
-    // Apply sign convention based on transaction type
-    return {
-      tokenAmount: isBuy ? tokenAmount : -tokenAmount,
-      wsolAmount: isBuy ? -solAmount : solAmount,
-      price: price,
-      isBuy: isBuy
-    };
-  }
-
-  // Second attempt: Parse the Program data binary format
-  // This is the binary data produced by Pump.fun
-  const programDataLog = logMessages.find(log => log.includes('Program data:'));
-  
-  if (programDataLog) {
-    try {
-      // Extract the base64 data
-      const base64Data = programDataLog.split('Program data: ')[1];
-      const buffer = Buffer.from(base64Data, 'base64');
-      
-      // Based on analysis, the correct offsets for the data are:
-      // - solAmount is at offset 40 (8 bytes)
-      // - tokenAmount is at offset 48 (8 bytes)
-      // - isBuy flag is at offset 56 (1 byte)
-      const solAmount = Number(buffer.readBigUInt64LE(40)) / 1e9; // Convert lamports to SOL
-      const tokenAmount = Number(buffer.readBigUInt64LE(48)) / 1e6; // Assuming 6 decimals
-      const isBuy = buffer.readUInt8(56) === 1;
-      
-      // Calculate price
-      const price = solAmount / tokenAmount;
-      
-      // Apply sign convention based on transaction type
-      return {
-        tokenAmount: isBuy ? tokenAmount : -tokenAmount,
-        wsolAmount: isBuy ? -solAmount : solAmount,
-        price: price,
-        isBuy: isBuy
-      };
-    } catch (e) {
-      console.error('Error parsing program data:', e);
-    }
-  }
-
-  // If we get here, we need to fall back to token balance changes
-  console.log('No event data found, falling back to token balance changes');
-  
-  // Get token balance changes
-  const preTokenBalances = transactionDetails.meta.preTokenBalances || [];
-  const postTokenBalances = transactionDetails.meta.postTokenBalances || [];
-  
-  // Get SOL balance changes
-  const preBalanceLamports = transactionDetails.meta.preBalances[0] || 0;
-  const postBalanceLamports = transactionDetails.meta.postBalances[0] || 0;
-  const solDiffLamports = preBalanceLamports - postBalanceLamports - 2039280; // Subtract token account creation fee
-  
-  // Find the user's token account 
-  const userPostToken = postTokenBalances.find(post => 
-    !preTokenBalances.some(pre => pre.accountIndex === post.accountIndex)
-  );
-  
-  if (userPostToken) {
-    const tokenAmount = Number(userPostToken.uiTokenAmount.amount) / 10 ** userPostToken.uiTokenAmount.decimals;
-    const solAmount = solDiffLamports / 1e9;
-    const isBuy = true; // Assume it's a buy if we created a new token account
-    
-    // Calculate price
-    const price = Math.abs(solAmount / tokenAmount);
-    
-    return {
-      tokenAmount: tokenAmount,
-      wsolAmount: -solAmount, // Negative because we spent SOL
-      price: price,
-      isBuy: isBuy
-    };
-  }
-  
-  throw new Error('Could not determine transaction details');
-}
 /**
  * Convenience wrapper for buying tokens with GMGN
  */
