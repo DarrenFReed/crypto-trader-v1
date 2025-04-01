@@ -264,80 +264,87 @@ async function extractMintAddressFromLogs(logs: string[], signature: string): Pr
 // Track processed transactions to avoid duplicates
 const processedTransactions = new Set<string>();
 let isProcessingToken = false;
+let useLogMonitoring = true;
 
 // Main monitoring function
 (async function () {
-  const subscriptionId = connection.onLogs(PUMPFUN_PROGRAM_ID, async (logInfo, ctx) => {
-    const { logs, signature } = logInfo;
-    
-    // Skip if already processed
-    if (processedTransactions.has(signature)) {
-      return;
-    }
-    processedTransactions.add(signature);
-    
-    // Check the global lock first - this is faster than a DB query
-    if (isProcessingToken) {
-      //console.log(`⏸️ Skipping new token detection because we're already processing another token`);
-      return;
-    }
-
-    try {
-      // Set processing flag once at the beginning of try block
-      isProcessingToken = true;
+  
+    const subscriptionId = connection.onLogs(PUMPFUN_PROGRAM_ID, async (logInfo, ctx) => {
+      const { logs, signature } = logInfo;
       
-      // Check database for active tokens
-      const activeToken = await prisma.pumpToken.findFirst({
-        where: { 
-          tokenStatus: { 
-            in: ['DETECTED', 'BUYING', 'BOUGHT'] 
-          } 
+      // Skip if already processed
+      if (processedTransactions.has(signature)) {
+        return;
+      }
+      processedTransactions.add(signature);
+      
+      // Check the global lock first - this is faster than a DB query
+      if (isProcessingToken) {
+        //console.log(`⏸️ Skipping new token detection because we're already processing another token`);
+        return;
+      }
+
+      try {
+        // Set processing flag once at the beginning of try block
+        isProcessingToken = true;
+        
+        // Check database for active tokens
+        const activeToken = await prisma.pumpToken.findFirst({
+          where: { 
+            tokenStatus: { 
+              in: ['DETECTED', 'BUYING', 'BOUGHT'] 
+            } 
+          }
+        });
+        
+        if (activeToken) {
+          console.log(`⏸️ Skipping new token detection because we already have an active token`);
+          return;
         }
-      });
-      
-      if (activeToken) {
-        console.log(`⏸️ Skipping new token detection because we already have an active token`);
-        return;
-      }
-      
-      // Look for new token creation in logs
-      let foundNewToken = false;
-      for (const log of logs) {
-        if (log.includes("Create Metadata Accounts v3")) {
-          foundNewToken = true;
-          console.log("🚀 New token detected!");
-          console.log(`🔗 https://solscan.io/tx/${signature}`);
-          break;
+        
+
+        // Look for new token creation in logs
+        let foundNewToken = false;
+        for (const log of logs) {
+          if (log.includes("Create Metadata Accounts v3")) {
+            foundNewToken = true;
+            console.log("🚀 New token detected!");
+            console.log(`🔗 https://solscan.io/tx/${signature}`);
+            break;
+          }
         }
-      }
-      //call to test if owner bought enough tokens
+        //call to test if owner bought enough tokens
 
 
 
-      if (!foundNewToken) {
-        return; // No new token found, exit early
-      }
-      
-      const ownerInvested = await getPumpFunBuyAmount(connection, signature);
-      if (ownerInvested < 2) {
-        console.log(`❌ Owner did not invest enough SOL ${ownerInvested} SOL to proceed`);
-        return;
-      }
-      
-      console.log(`💸 Owner invested ${ownerInvested} SOL, proceeding with token purchase`);
-      
-      console.log("🔍 Extracting mint address...");
-      
-      // Extract the mint address from logs or transaction
-      const mintAddress = await extractMintAddressFromLogs(logs, signature);
-      
-      if (!mintAddress) {
-        console.log("⚠️ Could not determine mint address, skipping purchase");
-        return;
-      }
-      
-      console.log(`💰 Token Mint Address: ${mintAddress.toString()}`);
-      
+        if (!foundNewToken) {
+          return; // No new token found, exit early
+        }
+        
+        const ownerInvested = await getPumpFunBuyAmount(connection, signature);
+        if (ownerInvested < 2) {
+          console.log(`❌ Owner did not invest enough SOL ${ownerInvested} SOL to proceed`);
+          return;
+        }
+        
+        console.log(`💸 Owner invested ${ownerInvested} SOL, proceeding with token purchase`);
+        
+        console.log("🔍 Extracting mint address...");
+        
+        // Extract the mint address from logs or transaction
+        const mintAddress = await extractMintAddressFromLogs(logs, signature);
+        
+        if (!mintAddress) {
+          console.log("⚠️ Could not determine mint address, skipping purchase");
+          return;
+        }
+        
+        console.log(`💰 Token Mint Address: ${mintAddress.toString()}`);
+        
+        
+        
+
+
       // Check if we already have this token in our database
       const existingToken = await prisma.pumpToken.findUnique({
         where: { baseAddress: mintAddress.toString() }
@@ -498,3 +505,182 @@ let isProcessingToken = false;
     process.exit(0);
   });
 })();
+
+
+
+export async function tgTrade(tokenMint: string) {
+  const mintAddress = new PublicKey(tokenMint);
+
+  // Check the global lock first - this is faster than a DB query
+  if (isProcessingToken) {
+    //console.log(`⏸️ Skipping new token detection because we're already processing another token`);
+    return;
+  }
+
+  try {
+    // Set processing flag once at the beginning of try block
+    isProcessingToken = true;
+    
+    // Check database for active tokens
+    const activeToken = await prisma.pumpToken.findFirst({
+      where: { 
+        tokenStatus: { 
+          in: ['DETECTED', 'BUYING', 'BOUGHT'] 
+        } 
+      }
+    });
+    
+    if (activeToken) {
+      console.log(`⏸️ Skipping new token detection because we already have an active token`);
+      return;
+    }
+     
+    console.log(`💰 Token Mint Address: ${mintAddress.toString()}`);
+    
+    // Check if we already have this token in our database
+    const existingToken = await prisma.pumpToken.findUnique({
+      where: { baseAddress: mintAddress.toString() }
+    });
+    
+    if (existingToken) {
+      console.log(`⚠️ Token already in database with status: ${existingToken.tokenStatus}, skipping purchase`);
+      return;
+    }
+    
+    // Get bonding curve details to verify it's a valid token
+    const bondingCurveDetails = await getBondingCurveDetails(mintAddress);
+    
+    if (!bondingCurveDetails) {
+      console.log("⚠️ No bonding curve found, skipping purchase");
+      return;
+    }
+    
+    console.log("📊 Bonding curve found, token is valid");
+    console.log(`🧮 Bonding curve address: ${bondingCurveDetails.address.toString()}`);
+    
+    // Create initial token record with DETECTED status
+    await prisma.pumpToken.create({
+      data: {
+        baseAddress: mintAddress.toString(),
+        tokenStatus: 'DETECTED',
+        detectedAt: new Date(),
+        boughtAt: new Date(), // Will update after purchase
+        buyPrice: 0,
+        buyTxHash: ''
+      }
+    });
+    
+    console.log(`✅ Token added to database with DETECTED status`);
+    
+    // Add a small delay to ensure the token is fully initialized before buying
+    await sleep(0);
+    
+    // Monitor for entry conditions
+    let skipEntryMonitor = false;
+    let entryResult;
+    if (skipEntryMonitor) {
+      console.log(`🐞 DEBUG: Skipping entry monitor and proceeding directly to purchase`);
+      entryResult = { 
+        entryFound: true, 
+        tokenPrice: 0.000001, // Default debug price
+        debugMode: true 
+      };
+    } else {
+      console.log(`🔍 Monitoring for entry conditions...`);
+      entryResult = await monitorBCPriceForEntry(connection, mintAddress, bondingCurveDetails.address);
+    }
+
+    if (entryResult && entryResult.entryFound) {
+      console.log(`🎯 Entry condition met at price: ${entryResult.tokenPrice}`);
+      
+      // Update token status to BUYING
+      await prisma.pumpToken.update({
+        where: { baseAddress: mintAddress.toString() },
+        data: { tokenStatus: 'BUYING' }
+      });
+      
+      // Execute buy order
+      const buyResult = await executeBuyOrder(connection, mintAddress, bondingCurveDetails.address);
+      
+      if (buyResult && buyResult.confirmed) {
+        const buyPrice = buyResult.tokenDetails?.price || 0;
+        const tokenAmount = Math.abs(buyResult.tokenDetails?.tokenAmount || 0);
+        
+        // Update token with buy information
+        await prisma.pumpToken.update({
+          where: { baseAddress: mintAddress.toString() },
+          data: {
+            tokenStatus: 'BOUGHT',
+            boughtAt: new Date(),
+            buyPrice: buyPrice,
+            buyTxHash: buyResult.hash
+          }
+        });
+        
+        console.log(`✅ Updated token status to BOUGHT with price: ${buyPrice}`);
+        
+        // Start monitoring for exit conditions
+        console.log(`🔍 Starting exit price monitor...`);
+        const exitResult = await monitorBCPriceForExit(
+          connection, 
+          mintAddress, 
+          bondingCurveDetails.address,
+          buyPrice
+        );
+        
+        if (exitResult === "sell token" || exitResult === "timeout") {
+          console.log(`🔔 Exit condition met, executing sell order`);
+          
+          const tokenAmountInLamports = tokenAmount * 1e6;
+
+          // Execute sell order
+          const sellResult = await executeSellOrder(
+            connection,
+            mintAddress,
+            bondingCurveDetails.address,
+            tokenAmountInLamports
+          );
+          
+          if (sellResult && sellResult.confirmed) {
+            const sellPrice = sellResult.tokenDetails?.price || 0;
+            const profit = ((sellPrice / buyPrice) - 1) * 100;
+            
+            // Update token with sell information
+            await prisma.pumpToken.update({
+              where: { baseAddress: mintAddress.toString() },
+              data: {
+                tokenStatus: 'SOLD',
+                sellPrice: sellPrice,
+                sellTxHash: sellResult.hash,
+                profit: profit
+              }
+            });
+            
+            console.log(`✅ Token sold with profit: ${profit.toFixed(2)}%`);
+          } else {
+            console.error(`❌ Sell transaction failed`);
+          }
+        }
+      } else {
+        console.error(`❌ Buy transaction failed, updating token status`);
+        await prisma.pumpToken.update({
+          where: { baseAddress: mintAddress.toString() },
+          data: { tokenStatus: 'FAILED' }
+        });
+      }
+    } else {
+      console.log(`❌ Entry conditions not met, skipping purchase`);
+      await prisma.pumpToken.update({
+        where: { baseAddress: mintAddress.toString() },
+        data: { tokenStatus: 'SKIPPED' }
+      });
+    }
+  } catch (error) {
+    console.error(`Error processing token: ${error.message}`);
+    // Include stack trace for debugging
+    console.debug(error.stack);
+  } finally {
+    // Release the lock regardless of success or failure
+    isProcessingToken = false;
+  }
+}

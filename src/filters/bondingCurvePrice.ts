@@ -3,6 +3,7 @@ import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import BN from "bn.js"; // Make sure to install this package
 import * as splToken from '@solana/spl-token';
 import { fetchAllUseAuthorityRecord } from "@metaplex-foundation/mpl-token-metadata";
+import chalk from 'chalk';
 
 
 // Default profit/loss thresholds for auto-selling
@@ -134,301 +135,397 @@ async function getUniqueWalletOwners(connection: Connection, mintAddress) {
 
 // The original monitorBondingCurvePrice function (keeping for reference)
 export async function monitorBCPriceForEntry(
-    connection: Connection,
-    mintAddress: PublicKey,
-    bondingCurveAddress: PublicKey,
-    options = {
-        immediateEntry: false, 
-        minPriceIncreasePercent: 15.0,       // Minimum percentage increase to trigger immediate entry
-        minCumulativeIncrease: 10.0,         // Alternative: Total increase over X periods
-        totalPeriodsToCheck: 6,             // Number of periods to calculate cumulative increase
-        minTotalChangePercent: -100.0,        // Minimum total percentage change from initial price
-                  // Whether to enter immediately on significant increase
-        monitoringTimeout: 1 * 60 * 1000,    // 3 minute timeout
-        requireMultipleIncreases: false,     // Whether to require multiple cumulative increases
-        requiredIncreaseCount: 2,            // Number of times the cumulative threshold should be reached
-        consecutiveIncreaseThreshold: 0.1,   // Minimum percentage for consecutive price increases to count
-        useAccelerationEntry: true,         // Whether to use acceleration for entry detection
-        accelerationThreshold: 0.5,          // Minimum acceleration value to consider significant
-        requiredAccelerationCount: 3         // Number of consecutive periods with significant acceleration
-    }) {
+  connection: Connection,
+  mintAddress: PublicKey,
+  bondingCurveAddress: PublicKey,
+  options = {
+      immediateEntry: false, 
+      minPriceIncreasePercent: 15.0,       // Minimum percentage increase to trigger immediate entry
+      minCumulativeIncrease: 10.0,         // Alternative: Total increase over X periods
+      totalPeriodsToCheck: 6,             // Number of periods to calculate cumulative increase
+      minTotalChangePercent: -100.0,        // Minimum total percentage change from initial price
+      monitoringTimeout: 1 * 60 * 1000,    // 3 minute timeout
+      requireMultipleIncreases: false,     // Whether to require multiple cumulative increases
+      requiredIncreaseCount: 2,            // Number of times the cumulative threshold should be reached
+      consecutiveIncreaseThreshold: 2,   // Minimum percentage for consecutive price increases to count
+      useAccelerationEntry: true,         // Whether to use acceleration for entry detection
+      accelerationThreshold: 2,          // Minimum acceleration value to consider significant
+      requiredAccelerationCount: 3,        // Number of consecutive periods with significant acceleration
+      useAccelerationSmoothing: false,     // Whether to apply smoothing to acceleration values
+      smoothingPeriods: 3,                // Number of periods for acceleration smoothing
+      smoothingAlpha: 0,                  // Alpha value for EMA (0 = auto-calculate based on periods)
+      useAccelerationBuffer: true,        // Whether to use a buffer before resetting the acceleration counter
+      accelerationResetThreshold: -10.0,   // Only reset counter if acceleration drops below this negative value
+      useNonConsecutiveAcceleration: true, // Whether to count acceleration periods within a window rather than consecutive only
+      accelerationWindowSize: 8           // Size of window to check for significant acceleration periods
+  }) {
 
-  console.log("Starting trend-following entry monitor...");
-  console.log(`Monitoring bonding curve at address: ${bondingCurveAddress.toString()}`);
-  console.log(`Token mint address: ${mintAddress.toString()}`);
-  
-  if (options.immediateEntry) {
-    console.log(`Entry criteria: Immediate entry on >${options.minPriceIncreasePercent}% jump`);
-  } else if (options.requireMultipleIncreases) {
-    console.log(`Entry criteria: >${options.minCumulativeIncrease}% cumulative increase over ${options.totalPeriodsToCheck} periods`);
-    console.log(`                Plus ${options.requiredIncreaseCount} consecutive price jumps of >${options.consecutiveIncreaseThreshold}%`);
-  } else if (options.useAccelerationEntry) {
-    console.log(`Entry criteria: ${options.requiredAccelerationCount} consecutive periods with price acceleration >${options.accelerationThreshold}%`);
+console.log("Starting trend-following entry monitor...");
+console.log(`Monitoring bonding curve at address: ${bondingCurveAddress.toString()}`);
+console.log(`Token mint address: ${mintAddress.toString()}`);
+
+if (options.immediateEntry) {
+  console.log(`Entry criteria: Immediate entry on >${options.minPriceIncreasePercent}% jump`);
+} else if (options.requireMultipleIncreases) {
+  console.log(`Entry criteria: >${options.minCumulativeIncrease}% cumulative increase over ${options.totalPeriodsToCheck} periods`);
+  console.log(`                Plus ${options.requiredIncreaseCount} consecutive price jumps of >${options.consecutiveIncreaseThreshold}%`);
+} else if (options.useAccelerationEntry) {
+  if (options.useNonConsecutiveAcceleration) {
+    console.log(`Entry criteria: ${options.requiredAccelerationCount} periods with price acceleration >${options.accelerationThreshold}% within last ${options.accelerationWindowSize} periods`);
   } else {
-    console.log(`Entry criteria: >${options.minCumulativeIncrease}% cumulative increase over ${options.totalPeriodsToCheck} periods`);
+    console.log(`Entry criteria: ${options.requiredAccelerationCount} ${options.useAccelerationBuffer ? 'significant' : 'consecutive'} periods with price acceleration >${options.accelerationThreshold}%`);
   }
   
-  // First fetch to make sure the bonding curve exists
-  const initialData = await fetchBondingCurveData(connection, bondingCurveAddress);
-  if (!initialData) {
-    console.error("❌ Could not fetch initial bonding curve data. Please check the address and try again.");
-    return null;
+  if (options.useAccelerationSmoothing) {
+    console.log(`                Using EMA smoothing over ${options.smoothingPeriods} periods`);
   }
   
-  // Return a promise that resolves when entry conditions are met
-  return new Promise(async (resolve) => {
-    // Store the initial price to calculate long term change
-    let initialPrice = 0;
-    let lastPrice = 0;
-    
-    // Store recent prices to calculate cumulative change
-    let recentPrices = [];
-    
-    // For tracking multiple increases
-    let significantIncreaseCount = 0;
-    let previousCumulativeChange = 0;
-    
-    // For tracking price acceleration
-    let recentVelocities = [];
-    let significantAccelerationCount = 0;
-    
-    // Set interval to run every second
-    const intervalId = setInterval(async () => {
-      try {
-        // Get bonding curve data
-        const bondingCurveData = await fetchBondingCurveData(connection, bondingCurveAddress);
-        
-        if (!bondingCurveData) {
-          console.log("❌ Could not fetch bonding curve data");
-          return;
-        }
-        
-        const tokenPrice = calculateTokenPrice(connection, bondingCurveData);
-        
-        // Set initial price if it's the first run
-        if (initialPrice === 0) {
-          initialPrice = tokenPrice;
-          lastPrice = tokenPrice;
-          console.log(`📊 Initial price set to: ${formatPrice(initialPrice)} SOL per token`);
-          return; // Skip the first iteration after setting initial price
-        }
-        
-        // Store the current price for cumulative calculations
-        recentPrices.push(tokenPrice);
-        if (recentPrices.length > options.totalPeriodsToCheck) {
-          recentPrices.shift(); // Remove oldest price to maintain fixed window
-        }
-        
-        // Calculate price movement (current vs. last check)
-        let priceMovement = "NEUTRAL";
-        let priceChangePercent = 0;
-        
-        if (lastPrice > 0) {
-          priceChangePercent = ((tokenPrice - lastPrice) / lastPrice) * 100;
-          
-          if (priceChangePercent > 0) {
-            priceMovement = "UP";
-          } else if (priceChangePercent < 0) {
-            priceMovement = "DOWN";
-          } else {
-            priceMovement = "NEUTRAL";
-          }
-          
-          // Store current velocity (price change) for acceleration calculation
-          recentVelocities.push(priceChangePercent);
-          // Keep only the recent velocities for calculation
-          if (recentVelocities.length > 5) {
-            recentVelocities.shift();
-          }
-          
-          // Calculate acceleration (change in velocity)
-          let acceleration = 0;
-          if (recentVelocities.length >= 2) {
-            const currentVelocity = recentVelocities[recentVelocities.length - 1];
-            const previousVelocity = recentVelocities[recentVelocities.length - 2];
-            acceleration = currentVelocity - previousVelocity;
-            
-            // Track consecutive periods with significant acceleration
-            if (acceleration >= options.accelerationThreshold) {
-              significantAccelerationCount++;
-              if (options.useAccelerationEntry) {
-                console.log(`\n🚀 Significant price acceleration detected! (${significantAccelerationCount}/${options.requiredAccelerationCount} required)`);
-                console.log(`   Acceleration: ${acceleration.toFixed(2)}% (threshold: ${options.accelerationThreshold}%)`);
-              }
-            } else {
-              // Reset counter if acceleration falls below threshold
-              if (significantAccelerationCount > 0) {
-                console.log(`\n📉 Price acceleration decreased. Resetting acceleration counter from ${significantAccelerationCount} to 0`);
-                significantAccelerationCount = 0;
-              }
-            }
-          }
-          
-          // Reset consecutive increases counter ONLY if price decreases (not on neutral)
-          if ((priceChangePercent < 0) && options.requireMultipleIncreases && significantIncreaseCount > 0) {
-            console.log(`\n📉 Price decreased. Resetting consecutive increase counter from ${significantIncreaseCount} to 0`);
-            significantIncreaseCount = 0;
-          }
-        }
-        
-        // Calculate cumulative price change over recent periods
-        let cumulativeChangePercent = 0;
-        if (recentPrices.length >= 2) {
-          const oldestPrice = recentPrices[0];
-          const newestPrice = recentPrices[recentPrices.length - 1];
-          cumulativeChangePercent = ((newestPrice - oldestPrice) / oldestPrice) * 100;
-        }
-        
-        // Update previous cumulative change for next iteration
-        previousCumulativeChange = cumulativeChangePercent;
-        
-        // Calculate long-term price change percentage from initial price
-        let longTermChangePercent = ((tokenPrice - initialPrice) / initialPrice) * 100;
-        
-        // Update last price for next iteration
+  if (options.useAccelerationBuffer) {
+    console.log(`                Using acceleration buffer (only reset counter when acceleration < ${options.accelerationResetThreshold}%)`);
+  }
+} else {
+  console.log(`Entry criteria: >${options.minCumulativeIncrease}% cumulative increase over ${options.totalPeriodsToCheck} periods`);
+}
+
+// First fetch to make sure the bonding curve exists
+const initialData = await fetchBondingCurveData(connection, bondingCurveAddress);
+if (!initialData) {
+  console.error("❌ Could not fetch initial bonding curve data. Please check the address and try again.");
+  return null;
+}
+
+// Return a promise that resolves when entry conditions are met
+return new Promise(async (resolve) => {
+  // Store the initial price to calculate long term change
+  let initialPrice = 0;
+  let lastPrice = 0;
+  
+  // Store recent prices to calculate cumulative change
+  let recentPrices = [];
+  
+  // For tracking multiple increases
+  let significantIncreaseCount = 0;
+  let previousCumulativeChange = 0;
+  
+  // For tracking price acceleration
+  let recentVelocities = [];
+  let significantAccelerationCount = 0;
+  let smoothedAcceleration = undefined;
+  
+  // For tracking non-consecutive acceleration
+  let recentAccelerations = [];
+  
+  // Set interval to run every second
+  const intervalId = setInterval(async () => {
+    try {
+      // Get bonding curve data
+      const bondingCurveData = await fetchBondingCurveData(connection, bondingCurveAddress);
+      
+      if (!bondingCurveData) {
+        console.log("❌ Could not fetch bonding curve data");
+        return;
+      }
+      
+      const tokenPrice = calculateTokenPrice(connection, bondingCurveData);
+      
+      // Set initial price if it's the first run
+      if (initialPrice === 0) {
+        initialPrice = tokenPrice;
         lastPrice = tokenPrice;
+        console.log(`📊 Initial price set to: ${formatPrice(initialPrice)} SOL per token`);
+        return; // Skip the first iteration after setting initial price
+      }
+      
+      // Store the current price for cumulative calculations
+      recentPrices.push(tokenPrice);
+      if (recentPrices.length > options.totalPeriodsToCheck) {
+        recentPrices.shift(); // Remove oldest price to maintain fixed window
+      }
+      
+      // Calculate price movement (current vs. last check)
+      let priceMovement = "NEUTRAL";
+      let priceChangePercent = 0;
+      
+      if (lastPrice > 0) {
+        priceChangePercent = ((tokenPrice - lastPrice) / lastPrice) * 100;
         
-        // Console log status with movement indicator
-        console.log("\n=== BONDING CURVE STATUS ===");
-        console.log(`Time: ${new Date().toISOString()}`);
-        console.log(`\nToken Price: ${formatPrice(tokenPrice)} SOL per token (${tokenPrice.toExponential(7)})`);
+        if (priceChangePercent > 0) {
+          priceMovement = "UP";
+        } else if (priceChangePercent < 0) {
+          priceMovement = "DOWN";
+        } else {
+          priceMovement = "NEUTRAL";
+        }
         
-        // Add price movement indicators with colors
-        const movementIcon = priceMovement === "UP" ? "🟢 ↑" : 
-                             priceMovement === "DOWN" ? "🔴 ↓" : "⚪ →";
-        console.log(`Current movement: ${movementIcon} ${priceMovement} (${priceChangePercent.toFixed(2)}%)`);
-        console.log(`Cumulative ${recentPrices.length}-period change: ${cumulativeChangePercent.toFixed(2)}%`);
-        console.log(`Change from initial price: ${longTermChangePercent.toFixed(2)}%`);
+        // Store current velocity (price change) for acceleration calculation
+        recentVelocities.push(priceChangePercent);
+        // Keep only the recent velocities for calculation
+        if (recentVelocities.length > 5) {
+          recentVelocities.shift();
+        }
         
-        // Log acceleration information if we have enough data
+        // Calculate acceleration (change in velocity)
+        let rawAcceleration = 0;
+        let acceleration = 0;
+        
         if (recentVelocities.length >= 2) {
           const currentVelocity = recentVelocities[recentVelocities.length - 1];
           const previousVelocity = recentVelocities[recentVelocities.length - 2];
-          const acceleration = currentVelocity - previousVelocity;
+          rawAcceleration = currentVelocity - previousVelocity;
           
-          const accelIcon = acceleration > 0 ? "🚀" : 
-                           acceleration < 0 ? "🔻" : "⏸️";
-          console.log(`Price acceleration: ${accelIcon} ${acceleration.toFixed(2)}%/period`);
-        }
-        
-        // Check entry conditions on every pass
-        const longTermChangeCondition = longTermChangePercent >= options.minTotalChangePercent;
-        
-        // Different entry conditions based on strategy
-        let entryCondition = false;
-        let entryReason = "";
-        
-        // Check for significant cumulative increase
-        const cumulativeConditionMet = cumulativeChangePercent >= options.minCumulativeIncrease && 
-                                      recentPrices.length >= options.totalPeriodsToCheck;
-        
-        // Track multiple increases if that option is enabled
-        if (options.requireMultipleIncreases && cumulativeConditionMet) {
-          // Only count increases that exceed the consecutive threshold
-          if (priceChangePercent >= options.consecutiveIncreaseThreshold) {
-            significantIncreaseCount++;
-            console.log(`\n📈 Significant price increase detected! (${significantIncreaseCount}/${options.requiredIncreaseCount} required)`);
-            console.log(`   Current increase: ${priceChangePercent.toFixed(2)}% (threshold: ${options.consecutiveIncreaseThreshold}%)`);
+          // Apply acceleration smoothing if enabled
+          if (options.useAccelerationSmoothing) {
+            // Calculate alpha for EMA if not provided
+            const alpha = options.smoothingAlpha > 0 ? 
+                      options.smoothingAlpha : 
+                      2 / (options.smoothingPeriods + 1);
+            
+            // Initialize or update smoothed acceleration value
+            if (smoothedAcceleration === undefined) {
+              smoothedAcceleration = rawAcceleration;
+            } else {
+              smoothedAcceleration = (alpha * rawAcceleration) + ((1 - alpha) * smoothedAcceleration);
+            }
+            
+            acceleration = smoothedAcceleration;
+          } else {
+            acceleration = rawAcceleration;
+          }
+          
+          // Store acceleration for non-consecutive tracking if enabled
+          if (options.useNonConsecutiveAcceleration) {
+            recentAccelerations.push(acceleration);
+            if (recentAccelerations.length > options.accelerationWindowSize) {
+              recentAccelerations.shift();
+            }
+          }
+          
+          // Track consecutive periods with significant acceleration
+          if (acceleration >= options.accelerationThreshold) {
+            significantAccelerationCount++;
+            if (options.useAccelerationEntry) {
+              console.log(`\n🚀 Significant price acceleration detected! (${significantAccelerationCount}/${options.requiredAccelerationCount} required)`);
+              console.log(`   Acceleration: ${acceleration.toFixed(2)}% (threshold: ${options.accelerationThreshold}%)`);
+            }
+          } else {
+            // Reset counter if acceleration falls below threshold - with buffer if enabled
+            if (significantAccelerationCount > 0) {
+              if (!options.useAccelerationBuffer || acceleration < options.accelerationResetThreshold) {
+                console.log(`\n📉 Price acceleration decreased. Resetting acceleration counter from ${significantAccelerationCount} to 0`);
+                significantAccelerationCount = 0;
+              } else {
+                console.log(`\n⚠️ Price acceleration decreased but within buffer range (${acceleration.toFixed(2)}% > ${options.accelerationResetThreshold}%). Maintaining count at ${significantAccelerationCount}.`);
+              }
+            }
           }
         }
         
-        if (options.immediateEntry) {
-          // Immediate entry on significant price increase
-          entryCondition = priceChangePercent >= options.minPriceIncreasePercent;
-          entryReason = "significant_immediate_increase";
-        } else if (options.useAccelerationEntry) {
+        // Reset consecutive increases counter ONLY if price decreases (not on neutral)
+        if ((priceChangePercent < 0) && options.requireMultipleIncreases && significantIncreaseCount > 0) {
+          console.log(`\n📉 Price decreased. Resetting consecutive increase counter from ${significantIncreaseCount} to 0`);
+          significantIncreaseCount = 0;
+        }
+      }
+      
+      // Calculate cumulative price change over recent periods
+      let cumulativeChangePercent = 0;
+      if (recentPrices.length >= 2) {
+        const oldestPrice = recentPrices[0];
+        const newestPrice = recentPrices[recentPrices.length - 1];
+        cumulativeChangePercent = ((newestPrice - oldestPrice) / oldestPrice) * 100;
+      }
+      
+      // Update previous cumulative change for next iteration
+      previousCumulativeChange = cumulativeChangePercent;
+      
+      // Calculate long-term price change percentage from initial price
+      let longTermChangePercent = ((tokenPrice - initialPrice) / initialPrice) * 100;
+      
+      // Update last price for next iteration
+      lastPrice = tokenPrice;
+      
+      // Console log status with movement indicator
+      console.log("\n=== BONDING CURVE STATUS ===");
+      console.log(`Time: ${new Date().toISOString()}`);
+      console.log(`\nToken Price: ${formatPrice(tokenPrice)} SOL per token (${tokenPrice.toExponential(7)})`);
+      
+      // Add price movement indicators with colors
+      const movementIcon = priceMovement === "UP" ? "🟢 ↑" : 
+                           priceMovement === "DOWN" ? "🔴 ↓" : "⚪ →";
+      console.log(`Current movement: ${movementIcon} ${priceMovement} (${priceChangePercent.toFixed(2)}%)`);
+      console.log(`Cumulative ${recentPrices.length}-period change: ${cumulativeChangePercent.toFixed(2)}%`);
+      console.log(chalk.blue(`Change from initial price: ${longTermChangePercent.toFixed(2)}%`));
+      
+      // Log acceleration information if we have enough data
+      if (recentVelocities.length >= 2) {
+        const currentVelocity = recentVelocities[recentVelocities.length - 1];
+        const previousVelocity = recentVelocities[recentVelocities.length - 2];
+        const rawAcceleration = currentVelocity - previousVelocity;
+        
+        // Determine which acceleration value to use for display
+        const displayAcceleration = options.useAccelerationSmoothing ? 
+                                   smoothedAcceleration : rawAcceleration;
+        
+        const accelIcon = displayAcceleration > 0 ? "🚀" : 
+                         displayAcceleration < 0 ? "🔻" : "⏸️";
+                         
+        if (options.useAccelerationSmoothing) {
+          console.log(`Price acceleration: ${accelIcon} ${displayAcceleration.toFixed(2)}%/period (smoothed)`);
+          console.log(`Raw acceleration: ${rawAcceleration.toFixed(2)}%/period`);
+        } else {
+          console.log(`Price acceleration: ${accelIcon} ${displayAcceleration.toFixed(2)}%/period`);
+        }
+      }
+      
+      // Check entry conditions on every pass
+      const longTermChangeCondition = longTermChangePercent >= options.minTotalChangePercent;
+      
+      // Different entry conditions based on strategy
+      let entryCondition = false;
+      let entryReason = "";
+      
+      // Check for significant cumulative increase
+      const cumulativeConditionMet = cumulativeChangePercent >= options.minCumulativeIncrease && 
+                                    recentPrices.length >= options.totalPeriodsToCheck;
+      
+      // Track multiple increases if that option is enabled
+      if (options.requireMultipleIncreases && cumulativeConditionMet) {
+        // Only count increases that exceed the consecutive threshold
+        if (priceChangePercent >= options.consecutiveIncreaseThreshold) {
+          significantIncreaseCount++;
+          console.log(`\n📈 Significant price increase detected! (${significantIncreaseCount}/${options.requiredIncreaseCount} required)`);
+          console.log(`   Current increase: ${priceChangePercent.toFixed(2)}% (threshold: ${options.consecutiveIncreaseThreshold}%)`);
+        }
+      }
+      
+      // For non-consecutive acceleration tracking
+      let nonConsecutiveCount = 0;
+      if (options.useNonConsecutiveAcceleration && recentAccelerations.length > 0) {
+        nonConsecutiveCount = recentAccelerations.filter(a => a >= options.accelerationThreshold).length;
+      }
+      
+      if (options.immediateEntry) {
+        // Immediate entry on significant price increase
+        entryCondition = priceChangePercent >= options.minPriceIncreasePercent;
+        entryReason = "significant_immediate_increase";
+      } else if (options.useAccelerationEntry) {
+        if (options.useNonConsecutiveAcceleration) {
+          // Entry based on number of significant acceleration periods within a window
+          entryCondition = nonConsecutiveCount >= options.requiredAccelerationCount;
+          entryReason = "non_consecutive_acceleration";
+        } else {
           // Entry based on consecutive periods of significant acceleration
           entryCondition = significantAccelerationCount >= options.requiredAccelerationCount;
           entryReason = "significant_price_acceleration";
-        } else if (options.requireMultipleIncreases) {
-          // Entry based on multiple cumulative increases over time
-          entryCondition = significantIncreaseCount >= options.requiredIncreaseCount;
-          entryReason = "multiple_cumulative_increases";
+        }
+      } else if (options.requireMultipleIncreases) {
+        // Entry based on multiple cumulative increases over time
+        entryCondition = significantIncreaseCount >= options.requiredIncreaseCount;
+        entryReason = "multiple_cumulative_increases";
+      } else {
+        // Entry based on a single cumulative increase over multiple periods
+        entryCondition = cumulativeConditionMet;
+        entryReason = "cumulative_increase";
+      }
+      
+      // Final entry condition must also meet the long term change threshold
+      if (entryCondition && longTermChangeCondition) {
+        console.log("\n🚨 ENTRY POINT DETECTED 🚨");
+        console.log("Conditions met:");
+        
+        if (entryReason === "significant_immediate_increase") {
+          console.log(`✅ Immediate price increase of ${priceChangePercent.toFixed(2)}% (threshold: ${options.minPriceIncreasePercent}%)`);
+        } else if (entryReason === "significant_price_acceleration") {
+          console.log(`✅ Detected ${significantAccelerationCount} ${options.useAccelerationBuffer ? 'significant' : 'consecutive'} periods of price acceleration`);
+          console.log(`✅ Each acceleration above: ${options.accelerationThreshold}% (increasing momentum)`);
+          if (options.useAccelerationSmoothing) {
+            console.log(`✅ Using smoothed acceleration values (EMA-${options.smoothingPeriods})`);
+          }
+        } else if (entryReason === "non_consecutive_acceleration") {
+          console.log(`✅ Detected ${nonConsecutiveCount} periods of significant price acceleration within the last ${recentAccelerations.length} periods`);
+          console.log(`✅ Each acceleration above: ${options.accelerationThreshold}% (increasing momentum)`);
+        } else if (entryReason === "multiple_cumulative_increases") {
+          console.log(`✅ Detected ${significantIncreaseCount} significant price increases (threshold: ${options.requiredIncreaseCount})`);
+          console.log(`✅ Each increase: >${options.consecutiveIncreaseThreshold}% (with cumulative increase >${options.minCumulativeIncrease}%)`);
         } else {
-          // Entry based on a single cumulative increase over multiple periods
-          entryCondition = cumulativeConditionMet;
-          entryReason = "cumulative_increase";
+          console.log(`✅ Cumulative price increase of ${cumulativeChangePercent.toFixed(2)}% over ${recentPrices.length} periods (threshold: ${options.minCumulativeIncrease}%)`);
         }
         
-        // Final entry condition must also meet the long term change threshold
-        if (entryCondition && longTermChangeCondition) {
-          console.log("\n🚨 ENTRY POINT DETECTED 🚨");
-          console.log("Conditions met:");
-          
-          if (entryReason === "significant_immediate_increase") {
-            console.log(`✅ Immediate price increase of ${priceChangePercent.toFixed(2)}% (threshold: ${options.minPriceIncreasePercent}%)`);
-          } else if (entryReason === "significant_price_acceleration") {
-            console.log(`✅ Detected ${significantAccelerationCount} consecutive periods of significant price acceleration`);
-            console.log(`✅ Each acceleration above: ${options.accelerationThreshold}% (increasing momentum)`);
-          } else if (entryReason === "multiple_cumulative_increases") {
-            console.log(`✅ Detected ${significantIncreaseCount} significant price increases (threshold: ${options.requiredIncreaseCount})`);
-            console.log(`✅ Each increase: >${options.consecutiveIncreaseThreshold}% (with cumulative increase >${options.minCumulativeIncrease}%)`);
-          } else {
-            console.log(`✅ Cumulative price increase of ${cumulativeChangePercent.toFixed(2)}% over ${recentPrices.length} periods (threshold: ${options.minCumulativeIncrease}%)`);
-          }
-          
-          console.log(`✅ Total price increase from initial: ${longTermChangePercent.toFixed(2)}%`);
-          console.log(`Recommended entry price: ${formatPrice(tokenPrice)} SOL per token`);
-          
-          // Clear the interval
-          clearInterval(intervalId);
-          
-          // Resolve the promise with the entry data
-          resolve({
-            entryFound: true,
-            tokenPrice,
-            priceChangePercent,
-            cumulativeChangePercent,
-            longTermChangePercent,
-            entryReason,
-            accelerationInfo: recentVelocities.length >= 2 ? 
-                        recentVelocities[recentVelocities.length - 1] - recentVelocities[recentVelocities.length - 2] : 0,
-            significantAccelerationCount,
-            recentPrices, // Include the price history that led to this decision
-            timestamp: new Date().toISOString()
-          });
-        } else {
-          console.log("\n⏳ Waiting for entry conditions:");
-          
-          if (options.immediateEntry) {
-            console.log(`${priceChangePercent >= options.minPriceIncreasePercent ? '✅' : '❌'} Immediate price increase >${options.minPriceIncreasePercent}% (current: ${priceChangePercent.toFixed(2)}%)`);
-          } else if (options.useAccelerationEntry) {
-            // For acceleration-based entry
-            const hasAccelerationData = recentVelocities.length >= 2;
-            console.log(`${hasAccelerationData ? '✅' : '❌'} Have enough data to calculate acceleration`);
-            if (hasAccelerationData) {
-              const currentAccel = recentVelocities[recentVelocities.length - 1] - recentVelocities[recentVelocities.length - 2];
-              console.log(`${currentAccel >= options.accelerationThreshold ? '✅' : '❌'} Current acceleration: ${currentAccel.toFixed(2)}% (threshold: ${options.accelerationThreshold}%)`);
+        console.log(chalk.blue(`✅ Total price increase from initial: ${longTermChangePercent.toFixed(2)}%`));
+        console.log(`Recommended entry price: ${formatPrice(tokenPrice)} SOL per token`);
+        
+        // Clear the interval
+        clearInterval(intervalId);
+        
+        // Resolve the promise with the entry data
+        resolve({
+          entryFound: true,
+          tokenPrice,
+          priceChangePercent,
+          cumulativeChangePercent,
+          longTermChangePercent,
+          entryReason,
+          accelerationInfo: {
+            raw: recentVelocities.length >= 2 ? 
+                recentVelocities[recentVelocities.length - 1] - recentVelocities[recentVelocities.length - 2] : 0,
+            smoothed: smoothedAcceleration,
+            count: options.useNonConsecutiveAcceleration ? nonConsecutiveCount : significantAccelerationCount
+          },
+          recentPrices, // Include the price history that led to this decision
+          timestamp: new Date().toISOString()
+        });
+      } else {
+        console.log("\n⏳ Waiting for entry conditions:");
+        
+        if (options.immediateEntry) {
+          console.log(`${priceChangePercent >= options.minPriceIncreasePercent ? '✅' : '❌'} Immediate price increase >${options.minPriceIncreasePercent}% (current: ${priceChangePercent.toFixed(2)}%)`);
+        } else if (options.useAccelerationEntry) {
+          // For acceleration-based entry
+          const hasAccelerationData = recentVelocities.length >= 2;
+          console.log(`${hasAccelerationData ? '✅' : '❌'} Have enough data to calculate acceleration`);
+          if (hasAccelerationData) {
+            // Determine which acceleration value to check against threshold
+            const checkAcceleration = options.useAccelerationSmoothing ? 
+                                   smoothedAcceleration : 
+                                   recentVelocities[recentVelocities.length - 1] - recentVelocities[recentVelocities.length - 2];
+            
+            if (options.useNonConsecutiveAcceleration) {
+              console.log(`${nonConsecutiveCount >= options.requiredAccelerationCount ? '✅' : '❌'} ${nonConsecutiveCount}/${options.requiredAccelerationCount} significant acceleration periods detected in window`);
+              console.log(`   Current acceleration: ${checkAcceleration.toFixed(2)}% (threshold: ${options.accelerationThreshold}%)`);
+            } else {
+              console.log(`${checkAcceleration >= options.accelerationThreshold ? '✅' : '❌'} Current acceleration: ${checkAcceleration.toFixed(2)}% (threshold: ${options.accelerationThreshold}%)`);
               console.log(`${significantAccelerationCount}/${options.requiredAccelerationCount} significant acceleration periods detected`);
             }
-          } else if (options.requireMultipleIncreases) {
-            console.log(`${recentPrices.length >= options.totalPeriodsToCheck ? '✅' : '❌'} Have ${recentPrices.length}/${options.totalPeriodsToCheck} periods of price data`);
-            console.log(`${significantIncreaseCount}/${options.requiredIncreaseCount} significant increases detected`);
-            if (recentPrices.length >= options.totalPeriodsToCheck) {
-              console.log(`${cumulativeChangePercent >= options.minCumulativeIncrease ? '✅' : '❌'} Current cumulative increase: ${cumulativeChangePercent.toFixed(2)}% (threshold: ${options.minCumulativeIncrease}%)`);
-            }
-          } else {
-            console.log(`${recentPrices.length >= options.totalPeriodsToCheck ? '✅' : '❌'} Have ${recentPrices.length}/${options.totalPeriodsToCheck} periods of price data`);
-            if (recentPrices.length >= options.totalPeriodsToCheck) {
-              console.log(`${cumulativeChangePercent >= options.minCumulativeIncrease ? '✅' : '❌'} Cumulative increase >${options.minCumulativeIncrease}% (current: ${cumulativeChangePercent.toFixed(2)}%)`);
-            }
           }
-          
-          console.log(`${longTermChangeCondition ? '✅' : '❌'} Total price change >${options.minTotalChangePercent}% (currently ${longTermChangePercent.toFixed(2)}%)`);
+        } else if (options.requireMultipleIncreases) {
+          console.log(`${recentPrices.length >= options.totalPeriodsToCheck ? '✅' : '❌'} Have ${recentPrices.length}/${options.totalPeriodsToCheck} periods of price data`);
+          console.log(`${significantIncreaseCount}/${options.requiredIncreaseCount} significant increases detected`);
+          if (recentPrices.length >= options.totalPeriodsToCheck) {
+            console.log(`${cumulativeChangePercent >= options.minCumulativeIncrease ? '✅' : '❌'} Current cumulative increase: ${cumulativeChangePercent.toFixed(2)}% (threshold: ${options.minCumulativeIncrease}%)`);
+          }
+        } else {
+          console.log(`${recentPrices.length >= options.totalPeriodsToCheck ? '✅' : '❌'} Have ${recentPrices.length}/${options.totalPeriodsToCheck} periods of price data`);
+          if (recentPrices.length >= options.totalPeriodsToCheck) {
+            console.log(`${cumulativeChangePercent >= options.minCumulativeIncrease ? '✅' : '❌'} Cumulative increase >${options.minCumulativeIncrease}% (current: ${cumulativeChangePercent.toFixed(2)}%)`);
+          }
         }
         
-      } catch (error) {
-        console.error(`Error in monitoring: ${error}`);
+        console.log(`${longTermChangeCondition ? '✅' : '❌'} Total price change >${options.minTotalChangePercent}% (currently ${longTermChangePercent.toFixed(2)}%)`);
       }
-    }, 2000);
-    
-    // Add a timeout to stop monitoring after a certain period
-    setTimeout(() => {
-      clearInterval(intervalId);
-      resolve({ entryFound: false, reason: "Timeout reached" });
-    }, options.monitoringTimeout); 
-  });
+      
+    } catch (error) {
+      console.error(`Error in monitoring: ${error}`);
+    }
+  }, 1000);
+  
+  // Add a timeout to stop monitoring after a certain period
+  setTimeout(() => {
+    clearInterval(intervalId);
+    resolve({ entryFound: false, reason: "Timeout reached" });
+  }, options.monitoringTimeout); 
+});
 }
+
 
 export async function monitorBCPriceForExit(
     connection: Connection,
@@ -436,7 +533,7 @@ export async function monitorBCPriceForExit(
     bondingCurveAddress: PublicKey,
     buyPrice: number,
     takeProfitPercent: number = 15, // Default 15% profit target
-    stopLossPercent: number =.5,    // Default 5% loss limit
+    stopLossPercent: number =5,    // Default 5% loss limit
     maxMonitorTime: number = 120000 // Default 1 hour (60 minutes)
 ): Promise<string> {
   console.log("Starting exit price monitor...");
