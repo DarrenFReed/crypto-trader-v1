@@ -142,33 +142,48 @@ export async function monitorBCPriceForEntry(
       immediateEntry: false, 
       minPriceIncreasePercent: 15.0,       // Minimum percentage increase to trigger immediate entry
       minCumulativeIncrease: 10.0,         // Alternative: Total increase over X periods
-      totalPeriodsToCheck: 6,             // Number of periods to calculate cumulative increase
-      minTotalChangePercent: -100.0,        // Minimum total percentage change from initial price
+      totalPeriodsToCheck: 6,              // Number of periods to calculate cumulative increase
+      minTotalChangePercent: -100.0,       // Minimum total percentage change from initial price
       monitoringTimeout: 1 * 60 * 1000,    // 3 minute timeout
       requireMultipleIncreases: false,     // Whether to require multiple cumulative increases
       requiredIncreaseCount: 2,            // Number of times the cumulative threshold should be reached
-      consecutiveIncreaseThreshold: 2,   // Minimum percentage for consecutive price increases to count
-      useAccelerationEntry: true,         // Whether to use acceleration for entry detection
-      accelerationThreshold: 2,          // Minimum acceleration value to consider significant
+      consecutiveIncreaseThreshold: 2,     // Minimum percentage for consecutive price increases to count
+      useAccelerationEntry: true,          // Whether to use acceleration for entry detection
+      accelerationThreshold: 2,            // Minimum acceleration value to consider significant
       requiredAccelerationCount: 3,        // Number of consecutive periods with significant acceleration
       useAccelerationSmoothing: false,     // Whether to apply smoothing to acceleration values
-      smoothingPeriods: 3,                // Number of periods for acceleration smoothing
-      smoothingAlpha: 0,                  // Alpha value for EMA (0 = auto-calculate based on periods)
-      useAccelerationBuffer: true,        // Whether to use a buffer before resetting the acceleration counter
+      smoothingPeriods: 3,                 // Number of periods for acceleration smoothing
+      smoothingAlpha: 0,                   // Alpha value for EMA (0 = auto-calculate based on periods)
+      useAccelerationBuffer: true,         // Whether to use a buffer before resetting the acceleration counter
       accelerationResetThreshold: -10.0,   // Only reset counter if acceleration drops below this negative value
       useNonConsecutiveAcceleration: true, // Whether to count acceleration periods within a window rather than consecutive only
-      accelerationWindowSize: 8           // Size of window to check for significant acceleration periods
+      accelerationWindowSize: 8,           // Size of window to check for significant acceleration periods
+      // Moving Average options
+      useMovingAverageEntry: true,        // Whether to use moving averages for entry detection
+      shortMAperiod: 3,                    // Period for short/fast moving average
+      longMAperiod: 6,                     // Period for long/slow moving average
+      requireMACrossover: false,           // Whether to require a fresh crossover or just uptrend
+      maUptrending: true,                  // Whether to enter during established uptrend (short > long)
+      maMinPriceIncrease: 10.0,            // Minimum price increase % to confirm MA signal
   }) {
 
 console.log("Starting trend-following entry monitor...");
 console.log(`Monitoring bonding curve at address: ${bondingCurveAddress.toString()}`);
 console.log(`Token mint address: ${mintAddress.toString()}`);
 
+// Log the entry criteria based on selected strategy
 if (options.immediateEntry) {
   console.log(`Entry criteria: Immediate entry on >${options.minPriceIncreasePercent}% jump`);
 } else if (options.requireMultipleIncreases) {
   console.log(`Entry criteria: >${options.minCumulativeIncrease}% cumulative increase over ${options.totalPeriodsToCheck} periods`);
   console.log(`                Plus ${options.requiredIncreaseCount} consecutive price jumps of >${options.consecutiveIncreaseThreshold}%`);
+} else if (options.useMovingAverageEntry) {
+  if (options.requireMACrossover) {
+    console.log(`Entry criteria: Bullish MA crossover (${options.shortMAperiod}-period > ${options.longMAperiod}-period)`);
+  } else if (options.maUptrending) {
+    console.log(`Entry criteria: Uptrending MAs (${options.shortMAperiod}-period > ${options.longMAperiod}-period)`);
+  }
+  console.log(`                Plus price increase >${options.maMinPriceIncrease}% from initial`);
 } else if (options.useAccelerationEntry) {
   if (options.useNonConsecutiveAcceleration) {
     console.log(`Entry criteria: ${options.requiredAccelerationCount} periods with price acceleration >${options.accelerationThreshold}% within last ${options.accelerationWindowSize} periods`);
@@ -214,6 +229,10 @@ return new Promise(async (resolve) => {
   
   // For tracking non-consecutive acceleration
   let recentAccelerations = [];
+  
+  // For tracking moving averages
+  let prevShortMA = null;
+  let prevLongMA = null;
   
   // Set interval to run every second
   const intervalId = setInterval(async () => {
@@ -341,6 +360,27 @@ return new Promise(async (resolve) => {
       // Calculate long-term price change percentage from initial price
       let longTermChangePercent = ((tokenPrice - initialPrice) / initialPrice) * 100;
       
+      // Calculate moving averages if needed
+      let shortMA = null;
+      let longMA = null;
+      let bullishCrossover = false;
+      let inUptrend = false;
+      
+      if (options.useMovingAverageEntry && recentPrices.length >= options.longMAperiod) {
+        // Calculate short and long moving averages
+        shortMA = calculateSMA(recentPrices, options.shortMAperiod);
+        longMA = calculateSMA(recentPrices, options.longMAperiod);
+        
+        // Detect crossover and trend
+        bullishCrossover = prevShortMA !== null && prevLongMA !== null && 
+                          shortMA > longMA && prevShortMA <= prevLongMA;
+        inUptrend = shortMA > longMA;
+        
+        // Store current values for next iteration
+        prevShortMA = shortMA;
+        prevLongMA = longMA;
+      }
+      
       // Update last price for next iteration
       lastPrice = tokenPrice;
       
@@ -377,6 +417,14 @@ return new Promise(async (resolve) => {
         }
       }
       
+      // Log moving average info if applicable
+      if (options.useMovingAverageEntry && shortMA !== null && longMA !== null) {
+        console.log(`Short MA (${options.shortMAperiod}): ${shortMA.toExponential(7)}`);
+        console.log(`Long MA (${options.longMAperiod}): ${longMA.toExponential(7)}`);
+        if (inUptrend) console.log(`✅ In uptrend (short MA > long MA)`);
+        if (bullishCrossover) console.log(`🚀 Bullish crossover detected!`);
+      }
+      
       // Check entry conditions on every pass
       const longTermChangeCondition = longTermChangePercent >= options.minTotalChangePercent;
       
@@ -408,6 +456,17 @@ return new Promise(async (resolve) => {
         // Immediate entry on significant price increase
         entryCondition = priceChangePercent >= options.minPriceIncreasePercent;
         entryReason = "significant_immediate_increase";
+      } else if (options.useMovingAverageEntry) {
+        // Entry based on moving average signals
+        if (shortMA !== null && longMA !== null) {
+          // Entry on fresh crossover if required, otherwise check for uptrend
+          const maCondition = options.requireMACrossover ? bullishCrossover : 
+                            (options.maUptrending ? inUptrend : bullishCrossover);
+          
+          // Confirm with price increase from initial
+          entryCondition = maCondition && longTermChangePercent >= options.maMinPriceIncrease;
+          entryReason = bullishCrossover ? "ma_crossover" : "ma_uptrend";
+        }
       } else if (options.useAccelerationEntry) {
         if (options.useNonConsecutiveAcceleration) {
           // Entry based on number of significant acceleration periods within a window
@@ -447,6 +506,11 @@ return new Promise(async (resolve) => {
         } else if (entryReason === "multiple_cumulative_increases") {
           console.log(`✅ Detected ${significantIncreaseCount} significant price increases (threshold: ${options.requiredIncreaseCount})`);
           console.log(`✅ Each increase: >${options.consecutiveIncreaseThreshold}% (with cumulative increase >${options.minCumulativeIncrease}%)`);
+        } else if (entryReason === "ma_crossover" || entryReason === "ma_uptrend") {
+          console.log(`✅ Moving Average ${entryReason === "ma_crossover" ? 'crossover' : 'uptrend'} detected`);
+          console.log(`✅ Short MA (${options.shortMAperiod}-period): ${shortMA.toExponential(7)}`);
+          console.log(`✅ Long MA (${options.longMAperiod}-period): ${longMA.toExponential(7)}`);
+          console.log(`✅ Price increase from initial: ${longTermChangePercent.toFixed(2)}% (threshold: ${options.maMinPriceIncrease}%)`);
         } else {
           console.log(`✅ Cumulative price increase of ${cumulativeChangePercent.toFixed(2)}% over ${recentPrices.length} periods (threshold: ${options.minCumulativeIncrease}%)`);
         }
@@ -471,6 +535,12 @@ return new Promise(async (resolve) => {
             smoothed: smoothedAcceleration,
             count: options.useNonConsecutiveAcceleration ? nonConsecutiveCount : significantAccelerationCount
           },
+          maInfo: options.useMovingAverageEntry ? {
+            shortMA,
+            longMA,
+            crossover: bullishCrossover,
+            uptrend: inUptrend
+          } : null,
           recentPrices, // Include the price history that led to this decision
           timestamp: new Date().toISOString()
         });
@@ -479,6 +549,15 @@ return new Promise(async (resolve) => {
         
         if (options.immediateEntry) {
           console.log(`${priceChangePercent >= options.minPriceIncreasePercent ? '✅' : '❌'} Immediate price increase >${options.minPriceIncreasePercent}% (current: ${priceChangePercent.toFixed(2)}%)`);
+        } else if (options.useMovingAverageEntry) {
+          if (recentPrices.length >= options.longMAperiod) {
+            console.log(`✅ Have enough price data for moving averages`);
+            console.log(`${inUptrend ? '✅' : '❌'} Short MA ${inUptrend ? '>' : '<'} Long MA (${inUptrend ? 'uptrend' : 'downtrend'})`);
+            console.log(`${bullishCrossover ? '✅' : '❌'} Bullish crossover detected`);
+            console.log(`${longTermChangePercent >= options.maMinPriceIncrease ? '✅' : '❌'} Price increase >${options.maMinPriceIncrease}% (current: ${longTermChangePercent.toFixed(2)}%)`);
+          } else {
+            console.log(`❌ Need ${options.longMAperiod} periods of data for moving averages (current: ${recentPrices.length})`);
+          }
         } else if (options.useAccelerationEntry) {
           // For acceleration-based entry
           const hasAccelerationData = recentVelocities.length >= 2;
@@ -526,13 +605,20 @@ return new Promise(async (resolve) => {
 });
 }
 
+// Helper function for Simple Moving Average calculation
+function calculateSMA(prices, periods) {
+  if (prices.length < periods) return null;
+  const relevantPrices = prices.slice(prices.length - periods);
+  return relevantPrices.reduce((sum, price) => sum + price, 0) / periods;
+}
+
 
 export async function monitorBCPriceForExit(
     connection: Connection,
     mintAddress: PublicKey,
     bondingCurveAddress: PublicKey,
     buyPrice: number,
-    takeProfitPercent: number = 15, // Default 15% profit target
+    takeProfitPercent: number = 13, // Default 15% profit target
     stopLossPercent: number =5,    // Default 5% loss limit
     maxMonitorTime: number = 120000 // Default 1 hour (60 minutes)
 ): Promise<string> {
